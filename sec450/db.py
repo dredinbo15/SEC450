@@ -160,12 +160,16 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    """BEGIN IMMEDIATE ... COMMIT, rolling back on any exception."""
+    """BEGIN IMMEDIATE ... COMMIT, rolling back on any exception.
+
+    A failed COMMIT (e.g. SQLITE_BUSY) leaves SQLite's transaction open, so it
+    is rolled back too; otherwise every later BEGIN would fail (AC-03).
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
-    else:
         conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
