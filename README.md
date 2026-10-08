@@ -2,7 +2,7 @@
 ![Domain model](docs/images/domain_model.jpg)
 ![Data diagram](docs/images/data_diagram_schema.jpg)
 
-Section 3.1 Requirements (final)
+REQS
 Core behavior
 ID	Requirement	Source / need
 REQ-01	The system shall collect new entries from each configured lab source (Nginx access and error, SSH auth, application) at a configurable interval, default 60 seconds and never more than 5 minutes, and parse each entry into the common event schema (Section 5) with timestamps converted to UTC using the source’s configured time zone.	NIST SP 800-92; NIST SP 800-53 AU-2, AU-3, AU-8
