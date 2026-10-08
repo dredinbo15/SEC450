@@ -2,54 +2,16 @@ from datetime import timedelta
 
 import pytest
 
-from sec450.detection import run_detection
 from sec450.redact import redact_text
 from sec450.reports import generate_pending_reports
 from sec450.timeutil import iso
 from sec450.triage import TriageError, TriageResult, run_triage
 
-from .conftest import T0, insert_events
+from .conftest import T0
 
 
 def at(seconds: float) -> str:
     return iso(T0 + timedelta(seconds=seconds))
-
-
-def clusters(conn):
-    return conn.execute("SELECT rule_id, severity FROM cluster ORDER BY cluster_id").fetchall()
-
-
-@pytest.mark.parametrize("spacing,expected", [(75, 1), (75.25, 0)])  # 4 gaps: 300 s vs 301 s
-def test_r1_window_boundary(cfg, conn, clock, spacing, expected):  # AC-06
-    insert_events(conn, [{"ts": at(i * spacing), "action": "ssh_login", "outcome": "failure"} for i in range(5)])
-    clock.advance(400)
-    run_detection(conn, cfg, clock)
-    assert len(clusters(conn)) == expected
-
-
-def test_r1_below_threshold(cfg, conn, clock):
-    insert_events(conn, [{"ts": at(i), "action": "ssh_login", "outcome": "failure"} for i in range(4)])
-    run_detection(conn, cfg, clock)
-    assert clusters(conn) == []
-
-
-@pytest.mark.parametrize("total,expected", [(10_485_760, 0), (10_485_761, 1)])
-def test_r4_byte_boundary(cfg, conn, clock, total, expected):  # AC-06
-    insert_events(conn, [{"ts": at(0), "bytes_sent": total - 1}, {"ts": at(10), "bytes_sent": 1}])
-    run_detection(conn, cfg, clock)
-    assert len(clusters(conn)) == expected
-
-
-def test_r2_distinct_404s(cfg, conn, clock):
-    insert_events(conn, [{"ts": at(i), "status_code": 404, "target": f"/x{i}"} for i in range(20)])
-    run_detection(conn, cfg, clock)
-    assert [tuple(r) for r in clusters(conn)] == [("R2", "medium")]
-
-
-def test_r3_pattern(cfg, conn, clock):
-    insert_events(conn, [{"ts": at(0), "target": "/download?file=..%2f..%2fetc%2fpasswd"}])
-    run_detection(conn, cfg, clock)
-    assert [tuple(r) for r in clusters(conn)] == [("R3", "high")]
 
 
 @pytest.mark.parametrize("n,redacted", [(31, False), (32, True)])

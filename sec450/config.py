@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -61,6 +62,22 @@ class RuleConfig(BaseModel):
     window_seconds: int = Field(ge=1)
     enabled: bool = True
     patterns: list[str] = []
+
+    @field_validator("patterns")
+    @classmethod
+    def _valid_patterns(cls, v: list[str]) -> list[str]:
+        for p in v:
+            try:
+                re.compile(p)
+            except re.error as exc:
+                raise ValueError(f"invalid pattern {p!r}: {exc}") from exc
+        return v
+
+    @model_validator(mode="after")
+    def _pattern_rule_has_patterns(self) -> "RuleConfig":
+        if self.kind == "pattern" and not self.patterns:
+            raise ValueError(f"rule {self.id}: a pattern rule needs at least one pattern")
+        return self
 
 
 class DetectionConfig(BaseModel):
