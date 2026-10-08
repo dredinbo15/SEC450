@@ -1,0 +1,8 @@
+# Runtime dependencies (Python 3.11+)
+anthropic>=1.12           # Claude triage (REQ-04)
+fastapi>=0.115           # HTTPS query endpoint (REQ-05, DD-15)
+uvicorn[standard]>=0.30  # ASGI server with TLS (REQ-09)
+pydantic>=2.7            # config + request/response validation
+PyYAML>=6.0              # config.yaml (REQ-12)
+geoip2>=4.8              # offline GeoLite2 lookups (REQ-02, DD-13)
+tzdata>=2024.1           # IANA zones for zoneinfo on Windows/slim images
