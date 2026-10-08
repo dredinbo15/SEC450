@@ -3,7 +3,7 @@ import ipaddress
 import json
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +16,7 @@ from sec450.geoip import GeoIP
 from sec450.hashchain import verify_batches
 from sec450.models import ParsedEvent
 from sec450.parsers import PARSERS, ParseContext
+from sec450.timeutil import FixedClock, iso
 
 from .conftest import ROOT
 
@@ -241,17 +242,18 @@ def test_one_cycle_collects_every_source(cfg, conn, clock):  # AC-01
 # --- AC-03: a failed commit loses and duplicates nothing ------------------------------------
 
 class FailingBatchCommit:
-    """Connection proxy whose first COMMIT after a batch insert fails, like SQLITE_BUSY on commit."""
+    """Connection proxy whose COMMIT of the nth batch fails, like SQLITE_BUSY on commit."""
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, fail_on_batch: int = 1):
         self._conn = conn
-        self._armed = False
+        self._fail_on = fail_on_batch
+        self._batches = 0
         self.failed = False
 
     def execute(self, sql, *args):
         if sql.startswith("INSERT INTO batch"):
-            self._armed = True
-        if sql == "COMMIT" and self._armed and not self.failed:
+            self._batches += 1
+        if sql == "COMMIT" and self._batches == self._fail_on and not self.failed:
             self.failed = True
             raise sqlite3.OperationalError("database is locked")
         return self._conn.execute(sql, *args)
@@ -260,18 +262,116 @@ class FailingBatchCommit:
         return getattr(self._conn, name)
 
 
-def test_commit_failure_then_retry_stores_each_line_once(cfg, conn, clock):  # AC-03
-    src = next(s for s in cfg.sources if s.name == "app")
-    Path(src.path).write_text("".join(TAGGED["app"](i) + "\n" for i in range(100)), encoding="utf-8")
+@pytest.mark.parametrize("fail_commit", [False, True], ids=["rotation", "rotation+commit-failure"])
+def test_no_loss_or_duplication(cfg, conn, clock, fail_commit):  # AC-03
+    """1,000 Nginx lines over 5 cycles, log rotated mid-cycle 3; separately, cycle 3's commit fails."""
+    src = next(s for s in cfg.sources if s.kind == "nginx_access")
+    path = Path(src.path)
+    db = FailingBatchCommit(conn, fail_on_batch=3) if fail_commit else conn
+    collector = Collector(cfg, db, clock, GeoIP())
+    written = 0
+    for cycle in range(1, 6):
+        for half in range(2):
+            with path.open("ab") as fh:
+                for _ in range(100):
+                    fh.write((TAGGED["nginx_access"](written) + "\n").encode()); written += 1
+            if cycle == 3 and half == 0:
+                path.replace(path.with_name(path.name + ".1"))  # create-style rotation (logrotate + USR1)
+        clock.advance(60)
+        if fail_commit and cycle == 3:
+            with pytest.raises(sqlite3.OperationalError):
+                collector.collect_source(src)
+            assert not conn.in_transaction
+        else:
+            collector.collect_source(src)
 
-    proxy = FailingBatchCommit(conn)
-    with pytest.raises(sqlite3.OperationalError):
-        Collector(cfg, proxy, clock, GeoIP()).collect_source(src)
-    assert proxy.failed and not conn.in_transaction
-    assert conn.execute("SELECT COUNT(*) FROM event").fetchone()[0] == 0
-
-    clock.advance(60)
-    Collector(cfg, conn, clock, GeoIP()).collect_source(src)
-    targets = sorted(r[0] for r in conn.execute("SELECT target FROM event"))
-    assert targets == sorted(f"/tag/{i}" for i in range(100))
+    assert written == 1000
+    counts = dict(conn.execute("SELECT target, COUNT(*) FROM event GROUP BY target").fetchall())
+    assert counts == {f"/tag/{i}": 1 for i in range(1000)}
     assert verify_batches(conn)["status"] == "intact"
+
+
+def test_one_failing_source_does_not_block_others(cfg, conn, clock):  # REQ-01 "each configured source"
+    for src in cfg.sources:
+        Path(src.path).write_text("".join(TAGGED[src.kind](i) + "\n" for i in range(10)), encoding="utf-8")
+    collector = Collector(cfg, FailingBatchCommit(conn, fail_on_batch=1), clock, GeoIP())
+    collector.run_cycle()                               # first source's commit fails, the rest continue
+    counts = dict(conn.execute("SELECT source, COUNT(*) FROM event GROUP BY source").fetchall())
+    assert counts == {src.name: 10 for src in cfg.sources[1:]}
+    clock.advance(60)
+    collector.run_cycle()                               # and it catches up on the next cycle
+    counts = dict(conn.execute("SELECT source, COUNT(*) FROM event GROUP BY source").fetchall())
+    assert counts == {src.name: 10 for src in cfg.sources}
+
+
+# --- AC-02 end to end: the 40 fixtures as stored event rows ---------------------------------
+
+def test_fixtures_stored_as_events(cfg, conn):  # AC-02 "every field of every event"
+    for src in cfg.sources:
+        src.timezone = TZ
+        Path(src.path).write_text("".join(line + "\n" for kind, line, _ in FIXTURES if kind == src.kind),
+                                  encoding="utf-8")
+    Collector(cfg, conn, FixedClock(NOW), GeoIP()).run_cycle()
+
+    hosts = {s.kind: (s.name, s.host) for s in cfg.sources}
+    expected = [(line, iso(ev.ts), *hosts[kind], ev.client_ip, ev.username, ev.api_key_id, None, None,
+                 ev.action, ev.target, ev.outcome, ev.status_code, ev.bytes_sent,
+                 int(ev.ts > NOW + timedelta(seconds=300)))
+                for kind, line, ev in FIXTURES]
+    rows = [tuple(r) for r in conn.execute(
+        "SELECT r.text, e.ts, e.source, e.host, e.client_ip, e.username, e.api_key_id, e.asn, e.country, "
+        "e.action, e.target, e.outcome, e.status_code, e.bytes_sent, e.clock_anomaly "
+        "FROM event e JOIN raw_line r USING (raw_id) ORDER BY e.event_id")]
+    assert rows == expected
+
+
+# --- A bad line is quarantined; it never stalls collection (REQ-01, REQ-07) ------------------
+
+GOOD_APP = TAGGED["app"](0)
+
+
+@pytest.mark.parametrize("extra,reason", [
+    ({"user": ["a"]}, "'user' must be a string"),
+    ({"api_key_id": {"a": 1}}, "'api_key_id' must be a string"),
+    ({"peer_ip": 123}, "'peer_ip' must be a string"),
+    ({"peer_ip": "172.20.0.10", "x_forwarded_for": 5}, "'x_forwarded_for' must be a string"),
+    ({"bytes": 10**30}, "'bytes' out of range"),
+    ({"bytes": -5}, "'bytes' out of range"),
+    ({"status": "abc"}, "'status' is not an integer"),
+])
+def test_bad_app_field_is_quarantined(cfg, conn, clock, extra, reason):
+    src = next(s for s in cfg.sources if s.kind == "app")
+    bad = json.dumps({"ts": "2026-10-08T14:00:00Z", "event": "x", "outcome": "success", **extra})
+    Path(src.path).write_text(f"{bad}\n{GOOD_APP}\n", encoding="utf-8")
+    Collector(cfg, conn, clock, GeoIP()).collect_source(src)
+    assert conn.execute("SELECT COUNT(*) FROM event").fetchone()[0] == 1
+    (text, why), = conn.execute("SELECT text, quarantine_reason FROM raw_line WHERE status = 'quarantined'")
+    assert text == bad and reason in why
+
+
+def test_unstorable_value_is_quarantined(cfg, conn, clock):
+    src = next(s for s in cfg.sources if s.kind == "nginx_access")
+    huge = '198.51.100.7 - - [08/Oct/2026:10:00:00 -0400] "GET / HTTP/1.1" 200 99999999999999999999 "-" "ua" "-"'
+    Path(src.path).write_text(f"{huge}\n{TAGGED['nginx_access'](1)}\n", encoding="utf-8")
+    Collector(cfg, conn, clock, GeoIP()).collect_source(src)
+    assert conn.execute("SELECT COUNT(*) FROM event").fetchone()[0] == 1
+    (why,), = conn.execute("SELECT quarantine_reason FROM raw_line WHERE status = 'quarantined'")
+    assert why.startswith("unstorable event: OverflowError")
+    assert verify_batches(conn)["status"] == "intact"
+
+
+def test_parser_crash_is_quarantined(cfg, conn, clock, monkeypatch):
+    src = next(s for s in cfg.sources if s.kind == "app")
+    real = PARSERS["app"]
+
+    def buggy(line, ctx):
+        if "boom" in line:
+            raise IndexError("list index out of range")
+        return real(line, ctx)
+
+    monkeypatch.setitem(PARSERS, "app", buggy)
+    Path(src.path).write_text(f'{{"boom": 1}}\n{GOOD_APP}\n', encoding="utf-8")
+    Collector(cfg, conn, clock, GeoIP()).collect_source(src)
+    assert conn.execute("SELECT COUNT(*) FROM event").fetchone()[0] == 1
+    (why,), = conn.execute("SELECT quarantine_reason FROM raw_line WHERE status = 'quarantined'")
+    assert why == "parser error: IndexError: list index out of range"

@@ -12,7 +12,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -20,7 +20,7 @@ from . import hashchain
 from .config import Config, SourceConfig
 from .db import transaction
 from .geoip import GeoIP
-from .models import ParseError
+from .models import ParsedEvent, ParseError
 from .parsers import PARSERS, ParseContext
 from .timeutil import Clock, iso
 
@@ -70,8 +70,12 @@ class Collector:
         self.health_warnings: list[dict] = []
 
     def run_cycle(self) -> None:
+        """Collect every source; one source failing never blocks the others (REQ-01)."""
         for source in self.cfg.sources:
-            self.collect_source(source)
+            try:
+                self.collect_source(source)
+            except Exception:
+                log.exception("collection failed for %s; will retry next cycle", source.name)
 
     def collect_source(self, source: SourceConfig) -> int | None:
         """Collect one source; returns the new batch_id, or None if nothing was stored."""
@@ -123,23 +127,18 @@ class Collector:
                 try:
                     ev = parse(text, ctx)
                 except ParseError as exc:
-                    quarantined += 1
-                    c.execute(
-                        "INSERT INTO raw_line (batch_id, seq, text, status, quarantine_reason) "
-                        "VALUES (?, ?, ?, 'quarantined', ?)", (batch_id, seq, text, str(exc)))
-                    continue
-                raw_id = c.execute(
-                    "INSERT INTO raw_line (batch_id, seq, text, status) VALUES (?, ?, ?, 'parsed')",
-                    (batch_id, seq, text)).lastrowid
-                asn, country = self.geoip.lookup(ev.client_ip)
+                    reason = str(exc)
+                except Exception as exc:  # a parser bug must not stall the source on this line forever
+                    log.exception("parser %s crashed on batch %s line %s", source.kind, batch_id, seq)
+                    reason = f"parser error: {type(exc).__name__}: {exc}"
+                else:
+                    reason = self._insert_event(c, source, batch_id, seq, text, ev, now + skew)
+                    if reason is None:
+                        continue
+                quarantined += 1
                 c.execute(
-                    "INSERT INTO event (raw_id, ts, source, host, client_ip, username, api_key_id, asn, "
-                    "country, action, target, outcome, status_code, bytes_sent, clock_anomaly) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (raw_id, iso(ev.ts), source.name, source.host, ev.client_ip, ev.username,
-                     ev.api_key_id, asn, country, ev.action, ev.target, ev.outcome, ev.status_code,
-                     ev.bytes_sent, int(ev.ts > now + skew)),
-                )
+                    "INSERT INTO raw_line (batch_id, seq, text, status, quarantine_reason) "
+                    "VALUES (?, ?, ?, 'quarantined', ?)", (batch_id, seq, text, reason))
             self._save_cursor(source.name, result.inode, result.offset)
 
         if quarantined / len(result.lines) > self.cfg.collector.quarantine_warn_ratio:
@@ -148,6 +147,36 @@ class Collector:
             self.health_warnings.append(warning)
             log.warning("high quarantine rate: %s", warning)
         return batch_id
+
+    def _insert_event(self, c: sqlite3.Connection, source: SourceConfig, batch_id: int, seq: int,
+                      text: str, ev: ParsedEvent, anomaly_after: datetime) -> str | None:
+        """Store a parsed line and its event; returns a quarantine reason if the event is unstorable.
+
+        Runs in a savepoint so a bad value (e.g. an integer too large for SQLite) undoes only
+        this line. Operational errors (locked, disk full) still propagate and retry the batch.
+        """
+        c.execute("SAVEPOINT line")
+        try:
+            raw_id = c.execute(
+                "INSERT INTO raw_line (batch_id, seq, text, status) VALUES (?, ?, ?, 'parsed')",
+                (batch_id, seq, text)).lastrowid
+            asn, country = self.geoip.lookup(ev.client_ip)
+            c.execute(
+                "INSERT INTO event (raw_id, ts, source, host, client_ip, username, api_key_id, asn, "
+                "country, action, target, outcome, status_code, bytes_sent, clock_anomaly) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (raw_id, iso(ev.ts), source.name, source.host, ev.client_ip, ev.username,
+                 ev.api_key_id, asn, country, ev.action, ev.target, ev.outcome, ev.status_code,
+                 ev.bytes_sent, int(ev.ts > anomaly_after)),
+            )
+        except (sqlite3.InterfaceError, sqlite3.IntegrityError, sqlite3.ProgrammingError,
+                OverflowError, TypeError, ValueError) as exc:
+            c.execute("ROLLBACK TO line")
+            c.execute("RELEASE line")
+            log.warning("unstorable event in batch %s line %s: %s", batch_id, seq, exc)
+            return f"unstorable event: {type(exc).__name__}: {exc}"
+        c.execute("RELEASE line")
+        return None
 
     def _save_cursor(self, source: str, inode: int, offset: int) -> None:
         self.conn.execute(

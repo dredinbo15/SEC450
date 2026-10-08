@@ -13,6 +13,29 @@ from ..timeutil import to_utc
 from .common import ParseContext, resolve_client_ip
 
 OUTCOMES = {"success", "failure", "unknown"}
+MAX_INT = 2**63 - 1  # SQLite INTEGER
+
+
+def _opt_str(obj: dict, key: str) -> str | None:
+    value = obj.get(key)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ParseError(f"field {key!r} must be a string")
+    return value
+
+
+def _opt_int(obj: dict, key: str, high: int) -> int | None:
+    value = obj.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ParseError(f"field {key!r} is not an integer") from exc
+    if not 0 <= number <= high:
+        raise ParseError(f"field {key!r} out of range: {number}")
+    return number
 
 
 def parse_app(line: str, ctx: ParseContext) -> ParsedEvent:
@@ -29,8 +52,6 @@ def parse_app(line: str, ctx: ParseContext) -> ParsedEvent:
         raise ParseError(f"bad outcome {obj['outcome']!r}")
     try:
         ts = to_utc(datetime.fromisoformat(str(obj["ts"]).replace("Z", "+00:00")), ctx.tz)
-        status = int(obj["status"]) if obj.get("status") is not None else None
-        bytes_sent = int(obj.get("bytes") or 0)
     except (TypeError, ValueError) as exc:
         raise ParseError(f"bad field value: {exc}") from exc
     return ParsedEvent(
@@ -38,9 +59,10 @@ def parse_app(line: str, ctx: ParseContext) -> ParsedEvent:
         action=str(obj["event"]),
         target=str(obj.get("path") or ""),
         outcome=obj["outcome"],
-        client_ip=resolve_client_ip(obj.get("peer_ip"), obj.get("x_forwarded_for"), ctx.trusted_proxies),
-        username=obj.get("user") or None,
-        api_key_id=obj.get("api_key_id") or None,
-        status_code=status,
-        bytes_sent=bytes_sent,
+        client_ip=resolve_client_ip(_opt_str(obj, "peer_ip"), _opt_str(obj, "x_forwarded_for"),
+                                    ctx.trusted_proxies),
+        username=_opt_str(obj, "user"),
+        api_key_id=_opt_str(obj, "api_key_id"),
+        status_code=_opt_int(obj, "status", 999),
+        bytes_sent=_opt_int(obj, "bytes", MAX_INT) or 0,
     )

@@ -18,13 +18,20 @@ class ParseContext:
 
 
 def normalize_ip(value: str | None) -> str | None:
-    """Canonical text form of an IP, or None for '-'/empty. Raises ParseError if invalid."""
+    """Canonical text form of an IP, or None for '-'/empty. Raises ParseError if invalid.
+
+    IPv4-mapped IPv6 (::ffff:a.b.c.d, logged by dual-stack listeners) becomes plain
+    IPv4, so proxy trust, GeoIP, queries and rule grouping all see one address.
+    """
     if value is None or value in ("", "-"):
         return None
     try:
-        return str(ipaddress.ip_address(value.strip()))
+        addr = ipaddress.ip_address(value.strip())
     except ValueError as exc:
         raise ParseError(f"invalid IP address {value!r}") from exc
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return str(addr)
 
 
 def is_trusted(ip: str | None, trusted: list[Network]) -> bool:

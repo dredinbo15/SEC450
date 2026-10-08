@@ -1,5 +1,4 @@
 import json
-import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -21,26 +20,6 @@ def app_line(i: int, ts: str = "2026-10-08T14:00:00Z") -> str:
 
 def app_source(cfg: Config):
     return next(s for s in cfg.sources if s.name == "app")
-
-
-def test_no_loss_or_duplication_across_rotation(cfg, conn, clock):  # AC-03
-    src = app_source(cfg)
-    path = Path(src.path)
-    collector = Collector(cfg, conn, clock, GeoIP())
-    written = 0
-    for cycle in range(5):
-        with path.open("a", encoding="utf-8") as fh:
-            for _ in range(100):
-                fh.write(app_line(written)); written += 1
-        if cycle == 2:  # rotate mid-cycle, then keep writing to a new file
-            os.replace(path, path.with_name(path.name + ".1"))
-            with path.open("a", encoding="utf-8") as fh:
-                for _ in range(100):
-                    fh.write(app_line(written)); written += 1
-        clock.advance(60)
-        collector.collect_source(src)
-    targets = [r[0] for r in conn.execute("SELECT target FROM event")]
-    assert sorted(targets) == sorted(f"/p/{i}" for i in range(written))
 
 
 def test_quarantine_and_health_warning(cfg, conn, clock):  # AC-17
