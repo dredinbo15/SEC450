@@ -103,12 +103,21 @@ class ClaudeTriageClient:
         text = next((b.text for b in response.content if b.type == "text"), None)
         if text is None:
             raise TriageError("no text block in response")
-        try:
-            result = TriageResult.model_validate_json(text)
-        except ValidationError as exc:
-            raise TriageError(f"invalid triage JSON: {exc.errors()[0]['msg']}") from exc
+        result = parse_triage_text(text)
         self.model = response.model  # record the model that actually answered (fallbacks)
         return result
+
+
+def parse_triage_text(text: str) -> TriageResult:
+    """Validate the model's JSON answer; anything malformed counts as a failed attempt.
+
+    Shared by the real client and the mock LLM, so the mock's bad-JSON and
+    missing-field modes go through exactly the same check as real responses.
+    """
+    try:
+        return TriageResult.model_validate_json(text)
+    except ValidationError as exc:
+        raise TriageError(f"invalid triage JSON: {exc.errors()[0]['msg']}") from exc
 
 
 def build_payload(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) -> dict:
@@ -138,8 +147,8 @@ def triage_cluster(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config,
         try:
             result = client.assess(payload)
         except TriageError as exc:
-            log.warning("triage of cluster %s failed (attempt %d/%d): %s",
-                        cluster["cluster_id"], attempt, attempts, exc)
+            log.warning("triage attempt %d/%d failed: %s", attempt, attempts, exc,
+                        extra={"cluster_id": cluster["cluster_id"]})
             continue
         with transaction(conn) as c:
             c.execute(
@@ -147,10 +156,12 @@ def triage_cluster(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config,
                 "ai_explanation = ?, ai_model = ?, ai_received_at = ? WHERE cluster_id = ?",
                 (result.classification[:200], result.recommended_severity, result.explanation[:500],
                  client.model, iso(clock.now()), cluster["cluster_id"]))
+        log.info("cluster triaged by %s", client.model, extra={"cluster_id": cluster["cluster_id"]})
         return "TRIAGED"
     with transaction(conn) as c:
         c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?",
                   (cluster["cluster_id"],))
+    log.warning("triage unavailable after %d attempts", attempts, extra={"cluster_id": cluster["cluster_id"]})
     return "TRIAGE_UNAVAILABLE"
 
 

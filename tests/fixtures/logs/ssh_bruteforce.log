@@ -1,0 +1,9 @@
+Oct  8 10:00:00 ssh01 sshd[2000]: Server listening on 0.0.0.0 port 22.
+Oct  8 10:00:01 ssh01 sshd[2001]: Accepted password for alice from 198.51.100.20 port 51000 ssh2
+Oct  8 10:00:05 ssh01 sshd[2002]: Invalid user admin from 203.0.113.50 port 50001
+Oct  8 10:00:05 ssh01 sshd[2002]: Failed password for invalid user admin from 203.0.113.50 port 50001 ssh2
+Oct  8 10:00:15 ssh01 sshd[2003]: Failed password for invalid user admin from 203.0.113.50 port 50002 ssh2
+Oct  8 10:00:25 ssh01 sshd[2004]: Failed password for root from 203.0.113.50 port 50003 ssh2
+Oct  8 10:00:35 ssh01 sshd[2005]: Failed password for root from 203.0.113.50 port 50004 ssh2
+Oct  8 10:00:45 ssh01 sshd[2006]: Failed password for invalid user admin from 203.0.113.50 port 50005 ssh2
+Oct  8 10:00:55 ssh01 sshd[2007]: Failed password for invalid user admin from 203.0.113.50 port 50006 ssh2

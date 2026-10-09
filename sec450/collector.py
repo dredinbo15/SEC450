@@ -75,7 +75,7 @@ class Collector:
             try:
                 self.collect_source(source)
             except Exception:
-                log.exception("collection failed for %s; will retry next cycle", source.name)
+                log.exception("collection failed; will retry next cycle", extra={"source": source.name})
 
     def collect_source(self, source: SourceConfig) -> int | None:
         """Collect one source; returns the new batch_id, or None if nothing was stored."""
@@ -130,7 +130,8 @@ class Collector:
                 except ParseError as exc:
                     reason = str(exc)
                 except Exception as exc:  # a parser bug must not stall the source on this line forever
-                    log.exception("parser %s crashed on batch %s line %s", source.kind, batch_id, seq)
+                    log.exception("parser %s crashed on line %s", source.kind, seq,
+                                  extra={"batch_id": batch_id, "source": source.name})
                     reason = f"parser error: {type(exc).__name__}: {exc}"
                 else:
                     reason = self._insert_event(c, source, batch_id, seq, text, ev, now + skew)
@@ -142,11 +143,13 @@ class Collector:
                     "VALUES (?, ?, ?, 'quarantined', ?)", (batch_id, seq, text, reason))
             self._save_cursor(source.name, result.inode, result.offset)
 
+        ctx_fields = {"batch_id": batch_id, "source": source.name}
+        log.info("batch stored: %d lines, %d quarantined", len(result.lines), quarantined, extra=ctx_fields)
         if quarantined / len(result.lines) > self.cfg.collector.quarantine_warn_ratio:
             warning = {"source": source.name, "batch_id": batch_id, "quarantined": quarantined,
                        "lines": len(result.lines), "at": collected_at}
             self.health_warnings.append(warning)
-            log.warning("high quarantine rate: %s", warning)
+            log.warning("high quarantine rate: %d of %d lines", quarantined, len(result.lines), extra=ctx_fields)
         return batch_id
 
     def _insert_event(self, c: sqlite3.Connection, source: SourceConfig, batch_id: int, seq: int,
@@ -174,7 +177,7 @@ class Collector:
                 OverflowError, TypeError, ValueError) as exc:
             c.execute("ROLLBACK TO line")
             c.execute("RELEASE line")
-            log.warning("unstorable event in batch %s line %s: %s", batch_id, seq, exc)
+            log.warning("unstorable event on line %s: %s", seq, exc, extra={"batch_id": batch_id})
             return f"unstorable event: {type(exc).__name__}: {exc}"
         c.execute("RELEASE line")
         return None
@@ -192,11 +195,11 @@ class Collector:
             if not c.execute('SELECT 1 FROM gap WHERE source = ? AND "end" IS NULL', (source,)).fetchone():
                 c.execute("INSERT INTO gap (source, start, reason) VALUES (?, ?, ?)",
                           (source, iso(self.clock.now()), reason))
-                log.error("collection gap opened for %s: %s", source, reason)
+                log.error("collection gap opened: %s", reason, extra={"source": source})
 
     def _close_gap(self, source: str) -> None:
         with transaction(self.conn) as c:
             n = c.execute('UPDATE gap SET "end" = ? WHERE source = ? AND "end" IS NULL',
                           (iso(self.clock.now()), source)).rowcount
         if n:
-            log.info("collection gap closed for %s", source)
+            log.info("collection gap closed", extra={"source": source})

@@ -108,6 +108,7 @@ class GeoIPConfig(BaseModel):
 
 class TriageConfig(BaseModel):
     enabled: bool = True
+    client: Literal["claude", "mock"] = "claude"   # "mock" = sec450/mock_llm.py, no API key needed
     api_key: str | None = None
     model: str = "claude-opus-5-5"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"

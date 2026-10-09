@@ -3,10 +3,14 @@
 The main loop collects and runs detection every interval. Triage, reports
 and retention run on a second thread with their own connection, so a slow
 LLM call never delays collection.
+
+The work of one cycle lives in collection_cycle() and analysis_cycle() so
+tests can drive exactly what the service runs, one step at a time.
 """
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 
@@ -15,24 +19,48 @@ from .config import Config, load_config
 from .db import connect, init_db
 from .detection import run_detection
 from .geoip import GeoIP
+from .logjson import setup_logging
+from .mock_llm import MockLLMClient
 from .reports import generate_pending_reports
 from .retention import run_retention
 from .timeutil import Clock
-from .triage import ClaudeTriageClient, run_triage
+from .triage import ClaudeTriageClient, LLMClient, run_triage
 
 log = logging.getLogger("sec450.worker")
 
 
+def make_triage_client(cfg: Config) -> LLMClient | None:
+    """The configured LLM client, or None (clusters then go to TRIAGE_UNAVAILABLE)."""
+    if not cfg.triage.enabled:
+        return None
+    if cfg.triage.client == "mock":
+        log.warning("triage uses the MOCK LLM; AI assessments are placeholders")
+        return MockLLMClient()
+    if not cfg.triage.resolved_api_key():
+        log.warning("no Claude API key configured; clusters will be marked TRIAGE_UNAVAILABLE")
+        return None
+    return ClaudeTriageClient(cfg.triage)
+
+
+def collection_cycle(collector: Collector, conn: sqlite3.Connection, cfg: Config, clock: Clock) -> None:
+    """Read new lines from every source, then evaluate the rules (REQ-01, REQ-03)."""
+    collector.run_cycle()
+    run_detection(conn, cfg, clock)
+
+
+def analysis_cycle(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMClient | None) -> None:
+    """Triage settled clusters, then write reports for finished high/critical ones (REQ-04, REQ-06)."""
+    run_triage(conn, cfg, clock, client)
+    generate_pending_reports(conn, cfg, clock)
+
+
 def analysis_loop(cfg: Config, clock: Clock, stop: threading.Event) -> None:
     conn = connect(cfg.database_path)
-    client = ClaudeTriageClient(cfg.triage) if cfg.triage.enabled and cfg.triage.resolved_api_key() else None
-    if cfg.triage.enabled and client is None:
-        log.warning("no Claude API key configured; clusters will be marked TRIAGE_UNAVAILABLE")
+    client = make_triage_client(cfg)
     last_retention = 0.0
     while not stop.is_set():
         try:
-            run_triage(conn, cfg, clock, client)
-            generate_pending_reports(conn, cfg, clock)
+            analysis_cycle(conn, cfg, clock, client)
             if time.monotonic() - last_retention >= cfg.retention.run_every_seconds:
                 run_retention(conn, cfg, clock)
                 last_retention = time.monotonic()
@@ -42,7 +70,7 @@ def analysis_loop(cfg: Config, clock: Clock, stop: threading.Event) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging()
     cfg = load_config()
     clock = Clock()
     conn = connect(cfg.database_path)
@@ -57,8 +85,7 @@ def main() -> None:
         while True:
             started = time.monotonic()
             try:
-                collector.run_cycle()
-                run_detection(conn, cfg, clock)
+                collection_cycle(collector, conn, cfg, clock)
             except Exception:
                 log.exception("collection cycle failed")
             time.sleep(max(0.0, interval - (time.monotonic() - started)))

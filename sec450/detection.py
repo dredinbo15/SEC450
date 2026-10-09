@@ -126,7 +126,8 @@ def _assign(conn: sqlite3.Connection, rule: RuleConfig, group_key: str, hits: se
                 "prev_cluster_id, created_at) VALUES (?, ?, ?, ?, ?, 'FLAGGED', ?, ?)",
                 (rule.id, rule.severity, group_key, placeholder, placeholder,
                  prev["cluster_id"] if prev else None, iso(now))).lastrowid
-            log.info("cluster %s opened: rule %s, %s, severity %s", cid, rule.id, group_key, rule.severity)
+            log.info("cluster flagged: rule %s, %s, severity %s", rule.id, group_key, rule.severity,
+                     extra={"cluster_id": cid})
         c.executemany("INSERT OR IGNORE INTO cluster_event (cluster_id, event_id) VALUES (?, ?)",
                       [(cid, eid) for eid in new])
         c.execute(

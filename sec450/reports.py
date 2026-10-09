@@ -104,5 +104,5 @@ def generate_pending_reports(conn: sqlite3.Connection, cfg: Config, clock: Clock
                 (cluster["cluster_id"], iso(clock.now()), json.dumps(body, ensure_ascii=False))).lastrowid
             c.execute("UPDATE cluster SET state = 'REPORTED' WHERE cluster_id = ?", (cluster["cluster_id"],))
         created.append(cast(int, rid))  # lastrowid is always set after an INSERT
-        log.info("report %s generated for cluster %s", rid, cluster["cluster_id"])
+        log.info("report generated", extra={"cluster_id": cluster["cluster_id"], "report_id": rid})
     return created
