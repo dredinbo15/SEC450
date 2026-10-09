@@ -69,8 +69,9 @@ CREATE TABLE IF NOT EXISTS cluster (
     group_key                TEXT NOT NULL,
     window_start             TEXT NOT NULL,
     window_end               TEXT NOT NULL,
-    state                    TEXT NOT NULL CHECK (state IN
-                                 ('open', 'triaging', 'triaged', 'triage_unavailable', 'closed')),
+    -- Lifecycle diagram: sec450/models.py CLUSTER_STATES
+    state                    TEXT NOT NULL CHECK (state IN ('FLAGGED', 'TRIAGE_PENDING', 'TRIAGED',
+                                 'TRIAGE_UNAVAILABLE', 'DONE', 'REPORTED')),
     prev_cluster_id          INTEGER REFERENCES cluster(cluster_id),
     ai_classification        TEXT,
     ai_recommended_severity  TEXT,

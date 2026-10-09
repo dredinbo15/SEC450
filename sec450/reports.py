@@ -2,6 +2,8 @@
 
 A report is generated once a cluster's triage has finished (successfully or
 not), so it always carries either the AI assessment or an "unavailable" marker.
+This step also moves finished clusters to their final state: high/critical
+become REPORTED (in the same transaction as the report), medium become DONE.
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ def build_report(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) ->
 
     total_bytes = sum(e["bytes_sent"] for e in events)
     rule_name = rule.name if rule else cluster["rule_id"]
-    if cluster["state"] == "triaged":
+    if cluster["ai_received_at"] is not None:  # set only when Claude answered
         ai = {"status": "available", "label": "AI-generated, advisory only",
               "classification": cluster["ai_classification"],
               "recommended_severity": cluster["ai_recommended_severity"],
@@ -82,17 +84,24 @@ def build_report(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) ->
 
 
 def generate_pending_reports(conn: sqlite3.Connection, cfg: Config, clock: Clock) -> list[int]:
+    """Report every high/critical cluster whose triage finished; close finished medium ones."""
+    with transaction(conn) as c:
+        c.execute("UPDATE cluster SET state = 'DONE' WHERE severity = 'medium' "
+                  "AND state IN ('TRIAGED', 'TRIAGE_UNAVAILABLE')")
+
     rows = conn.execute(
-        "SELECT c.* FROM cluster c LEFT JOIN report r USING (cluster_id) "
-        "WHERE r.report_id IS NULL AND c.severity IN ('high', 'critical') "
-        "AND c.state IN ('triaged', 'triage_unavailable') ORDER BY c.cluster_id").fetchall()
+        "SELECT * FROM cluster WHERE severity IN ('high', 'critical') "
+        "AND state IN ('TRIAGED', 'TRIAGE_UNAVAILABLE') ORDER BY cluster_id").fetchall()
     created = []
     for cluster in rows:
         body = build_report(conn, cluster, cfg)
+        # Report row and state change commit together, so a crash never leaves a
+        # REPORTED cluster without a report or a report for a cluster still waiting.
         with transaction(conn) as c:
             rid = c.execute(
-                "INSERT OR IGNORE INTO report (cluster_id, generated_at, body_json) VALUES (?, ?, ?)",
+                "INSERT INTO report (cluster_id, generated_at, body_json) VALUES (?, ?, ?)",
                 (cluster["cluster_id"], iso(clock.now()), json.dumps(body, ensure_ascii=False))).lastrowid
+            c.execute("UPDATE cluster SET state = 'REPORTED' WHERE cluster_id = ?", (cluster["cluster_id"],))
         created.append(rid)
         log.info("report %s generated for cluster %s", rid, cluster["cluster_id"])
     return created

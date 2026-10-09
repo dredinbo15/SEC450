@@ -45,7 +45,12 @@ class MockLLM:
 
 def _make_cluster(conn, severity):
     conn.execute("INSERT INTO cluster (rule_id, severity, group_key, window_start, window_end, state, created_at) "
-                 "VALUES ('R1', ?, '203.0.113.5', ?, ?, 'open', ?)", (severity, at(0), at(0), at(0)))
+                 "VALUES ('R1', ?, '203.0.113.5', ?, ?, 'FLAGGED', ?)", (severity, at(0), at(0), at(0)))
+
+
+def _states(conn) -> list[tuple]:
+    return [tuple(r) for r in conn.execute(
+        "SELECT severity, state, ai_recommended_severity FROM cluster ORDER BY cluster_id")]
 
 
 def test_triage_gating_and_advisory(cfg, conn, clock):  # AC-10
@@ -55,9 +60,21 @@ def test_triage_gating_and_advisory(cfg, conn, clock):  # AC-10
     llm = MockLLM(fail=False)
     run_triage(conn, cfg, clock, llm)
     assert llm.calls == 2
-    rows = conn.execute("SELECT severity, state, ai_recommended_severity FROM cluster ORDER BY cluster_id").fetchall()
-    assert [tuple(r) for r in rows] == [("low", "closed", None), ("medium", "triaged", "critical"),
-                                        ("high", "triaged", "critical")]
+    assert _states(conn) == [("low", "DONE", None), ("medium", "TRIAGED", "critical"),
+                             ("high", "TRIAGED", "critical")]
+
+
+def test_ac15_medium_done_without_report_high_reported(cfg, conn, clock):
+    """Cluster lifecycle end states: medium -> DONE with no report, high -> REPORTED with one."""
+    for sev in ("medium", "high"):
+        _make_cluster(conn, sev)
+    clock.advance(600)
+    run_triage(conn, cfg, clock, MockLLM(fail=False))
+    generate_pending_reports(conn, cfg, clock)
+    assert _states(conn) == [("medium", "DONE", "critical"), ("high", "REPORTED", "critical")]
+    assert [r[0] for r in conn.execute("SELECT cluster_id FROM report")] == [2]
+    generate_pending_reports(conn, cfg, clock)  # a second pass must not report twice
+    assert conn.execute("SELECT COUNT(*) FROM report").fetchone()[0] == 1
 
 
 def test_triage_failure_path_still_reports(cfg, conn, clock):  # AC-11
@@ -66,7 +83,8 @@ def test_triage_failure_path_still_reports(cfg, conn, clock):  # AC-11
     llm = MockLLM(fail=True)
     run_triage(conn, cfg, clock, llm)
     assert llm.calls == 3
-    assert conn.execute("SELECT state FROM cluster").fetchone()[0] == "triage_unavailable"
+    assert conn.execute("SELECT state FROM cluster").fetchone()[0] == "TRIAGE_UNAVAILABLE"
     generate_pending_reports(conn, cfg, clock)
+    assert conn.execute("SELECT state FROM cluster").fetchone()[0] == "REPORTED"
     body = conn.execute("SELECT body_json FROM report").fetchone()[0]
     assert '"status": "unavailable"' in body

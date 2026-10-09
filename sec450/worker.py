@@ -27,7 +27,7 @@ def analysis_loop(cfg: Config, clock: Clock, stop: threading.Event) -> None:
     conn = connect(cfg.database_path)
     client = ClaudeTriageClient(cfg.triage) if cfg.triage.enabled and cfg.triage.resolved_api_key() else None
     if cfg.triage.enabled and client is None:
-        log.warning("no Claude API key configured; clusters will be marked triage_unavailable")
+        log.warning("no Claude API key configured; clusters will be marked TRIAGE_UNAVAILABLE")
     last_retention = 0.0
     while not stop.is_set():
         try:

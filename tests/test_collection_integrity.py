@@ -79,7 +79,7 @@ def test_retention_boundaries(cfg, conn, clock):  # AC-22
     old = insert_events(conn, [{"ts": "x"}], collected_at=iso(T0 - timedelta(days=30, hours=1)))
     insert_events(conn, [{"ts": "y"}], collected_at=iso(T0 - timedelta(days=29, hours=23)))
     conn.execute("INSERT INTO cluster (rule_id, severity, group_key, window_start, window_end, state, created_at) "
-                 "VALUES ('R1','high','ip','a','b','triaged','c'), ('R1','high','ip2','a','b','triaged','c')")
+                 "VALUES ('R1','high','ip','a','b','REPORTED','c'), ('R1','high','ip2','a','b','REPORTED','c')")
     conn.execute("INSERT INTO report (cluster_id, generated_at, body_json) VALUES (1, ?, '{}'), (2, ?, '{}')",
                  (iso(T0 - timedelta(days=90, hours=1)), iso(T0 - timedelta(days=89, hours=23))))
     run_retention(conn, cfg, clock)

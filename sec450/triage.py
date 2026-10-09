@@ -2,7 +2,7 @@
 
 The rule-assigned severity is never changed; Claude's answer is stored in the
 cluster's ai_* columns. Any failure after the configured retries marks the
-cluster triage_unavailable and processing continues.
+cluster TRIAGE_UNAVAILABLE and processing continues.
 """
 from __future__ import annotations
 
@@ -143,47 +143,51 @@ def triage_cluster(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config,
             continue
         with transaction(conn) as c:
             c.execute(
-                "UPDATE cluster SET state = 'triaged', ai_classification = ?, ai_recommended_severity = ?, "
+                "UPDATE cluster SET state = 'TRIAGED', ai_classification = ?, ai_recommended_severity = ?, "
                 "ai_explanation = ?, ai_model = ?, ai_received_at = ? WHERE cluster_id = ?",
                 (result.classification[:200], result.recommended_severity, result.explanation[:500],
                  client.model, iso(clock.now()), cluster["cluster_id"]))
-        return "triaged"
+        return "TRIAGED"
     with transaction(conn) as c:
-        c.execute("UPDATE cluster SET state = 'triage_unavailable' WHERE cluster_id = ?",
+        c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?",
                   (cluster["cluster_id"],))
-    return "triage_unavailable"
+    return "TRIAGE_UNAVAILABLE"
 
 
 def run_triage(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMClient | None) -> None:
     """Freeze settled clusters and triage those at medium severity or higher.
 
-    Clusters left in 'triaging' by a crash are picked up again here.
+    Clusters left in TRIAGE_PENDING by a crash are picked up again here.
     """
     now = clock.now()
     settle = timedelta(seconds=cfg.triage.settle_seconds)
     max_wait = timedelta(seconds=cfg.triage.max_wait_seconds)
     rows = conn.execute(
-        "SELECT * FROM cluster WHERE state IN ('open', 'triaging') ORDER BY cluster_id").fetchall()
+        "SELECT * FROM cluster WHERE state IN ('FLAGGED', 'TRIAGE_PENDING') ORDER BY cluster_id").fetchall()
     for cluster in rows:
-        if cluster["state"] == "open":
+        if cluster["state"] == "FLAGGED":
             settled = now - parse_iso(cluster["window_end"]) >= settle
             if not settled and now - parse_iso(cluster["created_at"]) < max_wait:
                 continue
             if SEVERITY_ORDER[cluster["severity"]] < SEVERITY_ORDER["medium"]:
+                # Low clusters are never sent to the LLM (REQ-04).
                 with transaction(conn) as c:
-                    c.execute("UPDATE cluster SET state = 'closed' WHERE cluster_id = ? AND state = 'open'",
+                    c.execute("UPDATE cluster SET state = 'DONE' WHERE cluster_id = ? AND state = 'FLAGGED'",
                               (cluster["cluster_id"],))
                 continue
+            # Leaving FLAGGED freezes the cluster (DD-09). The "AND state" check makes this
+            # a no-op if another process already moved it.
             with transaction(conn) as c:
-                frozen = c.execute("UPDATE cluster SET state = 'triaging' WHERE cluster_id = ? AND state = 'open'",
-                                   (cluster["cluster_id"],)).rowcount
+                frozen = c.execute(
+                    "UPDATE cluster SET state = 'TRIAGE_PENDING' WHERE cluster_id = ? AND state = 'FLAGGED'",
+                    (cluster["cluster_id"],)).rowcount
             if not frozen:
                 continue
             cluster = conn.execute("SELECT * FROM cluster WHERE cluster_id = ?",
                                    (cluster["cluster_id"],)).fetchone()
         if not cfg.triage.enabled or client is None:
             with transaction(conn) as c:
-                c.execute("UPDATE cluster SET state = 'triage_unavailable' WHERE cluster_id = ?",
+                c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?",
                           (cluster["cluster_id"],))
             continue
         triage_cluster(conn, cluster, cfg, client, clock)

@@ -2,7 +2,7 @@
 
 Every rule groups events by client IP and slides a window over them in time
 order. A window qualifies when its metric meets the rule's threshold; every
-event inside a qualifying window joins the rule's open cluster for that IP.
+event inside a qualifying window joins the rule's FLAGGED cluster for that IP.
 Windows are inclusive: events exactly window_seconds apart share a window.
 """
 from __future__ import annotations
@@ -111,7 +111,7 @@ def _assign(conn: sqlite3.Connection, rule: RuleConfig, group_key: str, hits: se
         if not new:
             return None
         open_row = c.execute(
-            "SELECT cluster_id FROM cluster WHERE rule_id = ? AND group_key = ? AND state = 'open' "
+            "SELECT cluster_id FROM cluster WHERE rule_id = ? AND group_key = ? AND state = 'FLAGGED' "
             "ORDER BY cluster_id DESC LIMIT 1", (rule.id, group_key)).fetchone()
         if open_row:
             cid = open_row["cluster_id"]
@@ -123,7 +123,7 @@ def _assign(conn: sqlite3.Connection, rule: RuleConfig, group_key: str, hits: se
             placeholder = iso(now)
             cid = c.execute(
                 "INSERT INTO cluster (rule_id, severity, group_key, window_start, window_end, state, "
-                "prev_cluster_id, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)",
+                "prev_cluster_id, created_at) VALUES (?, ?, ?, ?, ?, 'FLAGGED', ?, ?)",
                 (rule.id, rule.severity, group_key, placeholder, placeholder,
                  prev["cluster_id"] if prev else None, iso(now))).lastrowid
             log.info("cluster %s opened: rule %s, %s, severity %s", cid, rule.id, group_key, rule.severity)
