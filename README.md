@@ -2,6 +2,45 @@
 ![Domain model](docs/images/domain_model.jpg)
 ![Data diagram](docs/images/data_diagram_schema.jpg)
 
+## Running it
+
+**Status:** thin slice. Only the SSH lab server exists; the nginx and app sources show up as collection gaps until their lab containers are added. Triage uses the mock LLM by default.
+
+You need Docker Desktop (or Docker Engine with Compose v2.24+). From the repo root:
+
+```sh
+cp config.example.yaml config.yaml     # all settings (PowerShell: copy config.example.yaml config.yaml)
+cp .env.example .env                   # secrets; can stay empty while triage.client is "mock"
+docker compose up --build -d
+docker compose ps                      # wait until collector and api show "healthy"
+```
+
+`traffic-gen` sends a burst of failed SSH logins about 15 s after start. Expect the first report within about 3 minutes: up to 60 s until the next collection, 60 s for the cluster to settle, then triage and the report.
+
+```sh
+docker compose exec api python -m sec450.keys create         # prints a key once; only its hash is stored
+curl -k -H "Authorization: Bearer <key>" https://localhost/v1/reports        # list reports (last 24 h)
+curl -k -H "Authorization: Bearer <key>" https://localhost/v1/reports/1      # one report
+docker compose exec collector python -m sec450.verify        # check both hash chains
+docker compose logs -f collector                             # JSON logs
+```
+
+`-k` accepts the self-signed certificate created on first start. In Windows PowerShell 5.1, type `curl.exe`, because `curl` is an alias for something else there. To use real Claude triage, set `triage.client: claude` in `config.yaml`, put `ANTHROPIC_API_KEY` in `.env`, and run `docker compose up -d` again. `docker compose down -v` stops everything and deletes the data volumes.
+
+## Running the tests and checks
+
+```sh
+python -m venv .venv
+.venv/Scripts/activate            # macOS/Linux: source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest                            # unit + thin-slice tests, about 15 s
+ruff check sec450 tests docker
+mypy sec450
+bandit -c pyproject.toml -r sec450 docker
+```
+
+Test hooks: `sec450/mock_llm.py` (mock LLM: ok, timeout, http_error, bad_json, missing_field), `FixedClock` in `sec450/timeutil.py` (injectable clock), and `tests/fixtures/logs/` (fixture log files).
+
 ## Requirements
 
 ### Core behavior
