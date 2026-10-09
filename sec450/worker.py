@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 from .collector import Collector
 from .config import Config, load_config
@@ -27,6 +29,9 @@ from .timeutil import Clock
 from .triage import ClaudeTriageClient, LLMClient, run_triage
 
 log = logging.getLogger("sec450.worker")
+
+# Touched after every collection cycle; the Docker healthcheck fails if it gets stale.
+HEARTBEAT = Path(tempfile.gettempdir()) / "sec450-collector.heartbeat"
 
 
 def make_triage_client(cfg: Config) -> LLMClient | None:
@@ -86,6 +91,7 @@ def main() -> None:
             started = time.monotonic()
             try:
                 collection_cycle(collector, conn, cfg, clock)
+                HEARTBEAT.touch()
             except Exception:
                 log.exception("collection cycle failed")
             time.sleep(max(0.0, interval - (time.monotonic() - started)))

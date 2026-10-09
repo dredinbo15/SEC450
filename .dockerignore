@@ -1,0 +1,14 @@
+# Keep the build context small and keep secrets and local data out of images.
+.git
+.venv
+.env
+config.yaml
+data/
+certs/
+geoip/*.mmdb
+tests/
+docs/
+**/__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache

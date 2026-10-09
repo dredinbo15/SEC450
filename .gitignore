@@ -8,3 +8,7 @@ config.yaml
 certs/
 geoip/*.mmdb
 .pytest_cache/
+.env
+data/
+.mypy_cache/
+.ruff_cache/

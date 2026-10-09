@@ -1,0 +1,86 @@
+# SEC450: lab servers, traffic generator, collector and API (REQ-12).
+#
+#   cp config.example.yaml config.yaml
+#   cp .env.example .env          # optional; only needed for real Claude triage
+#   docker compose up --build
+#
+# Only the api publishes a port (DD-10): https://localhost/ (host 443 -> container 8443).
+# Thin slice: only the SSH lab server exists so far. The nginx and app sources in
+# config.yaml show up as collection gaps until their lab containers are added.
+
+name: sec450
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: docker/app.Dockerfile
+  image: sec450-app:local
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+
+services:
+  lab-ssh:
+    build: docker/lab-ssh
+    hostname: ssh01                       # matches sources[ssh_auth].host in config.yaml
+    environment:
+      TZ: America/Indiana/Indianapolis    # matches sources[ssh_auth].timezone, so the UTC conversion is exercised
+    volumes:
+      - ssh-logs:/var/log/ssh
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/22"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  traffic-gen:
+    build: docker/traffic-gen
+    depends_on:
+      lab-ssh:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector:
+    <<: *app
+    command: ["python", "-m", "sec450.worker"]
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - db:/data                          # the one SQLite file, shared with the api (DD-06)
+      - ssh-logs:/logs/ssh:ro             # read-only: the collector never changes a log (DD-04, REQ-08)
+    healthcheck:
+      # Healthy while the collection loop keeps touching its heartbeat file (see sec450/worker.py).
+      test: ["CMD", "python", "-c",
+             "import os,sys,time; sys.exit(time.time() - os.path.getmtime('/tmp/sec450-collector.heartbeat') > 400)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
+  api:
+    <<: *app
+    command: ["python", "-m", "sec450.api"]
+    environment:
+      SEC450_SELF_SIGNED_CERT: "1"        # entrypoint creates a TLS cert on first start
+    ports:
+      - "443:8443"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - db:/data
+      - certs:/certs
+    depends_on:
+      collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import ssl,urllib.request; urllib.request.urlopen('https://localhost:8443/health', context=ssl._create_unverified_context(), timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  ssh-logs:
+  db:
+  certs:

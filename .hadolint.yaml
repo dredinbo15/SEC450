@@ -1,0 +1,3 @@
+# hadolint settings for docker/**/Dockerfile and docker/app.Dockerfile.
+ignored:
+  - DL3008   # pin apt versions: lab-only image; Debian bookworm pins are not stable over a semester
