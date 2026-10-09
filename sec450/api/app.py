@@ -6,8 +6,12 @@ entry. If the audit entry cannot be written the client gets a 500 with no data.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 import sqlite3
+import time
+import uuid
 from collections.abc import Iterator
 
 from fastapi import Depends, FastAPI, Request
@@ -63,7 +67,22 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
     async def security(request: Request, call_next):
         if not request.url.path.startswith("/v1/"):
             return await call_next(request)
+        # request_id ties this request's log lines together and is returned to the
+        # client in X-Request-ID, so a user can quote it when reporting a problem.
+        request_id = uuid.uuid4().hex[:16]
+        started = time.monotonic()
+        response = await _secured(request, call_next)
+        response.headers["X-Request-ID"] = request_id
+        log.info("%s %s -> %d", request.method, request.url.path, response.status_code,
+                 extra={"request_id": request_id, "key_id": getattr(request.state, "key_id", None),
+                        "status_code": response.status_code,
+                        "duration_ms": round((time.monotonic() - started) * 1000, 1)})
+        return response
+
+    async def _secured(request: Request, call_next):
+        """Checks run in order: API key -> rate limit -> handler (validation, query) -> audit."""
         key_id = await run_in_threadpool(_authenticate, request)
+        request.state.key_id = key_id   # the key's id only; the key itself is never stored or logged
         if key_id is None:
             response = JSONResponse({"error": "missing, invalid or revoked API key"}, status_code=401,
                                     headers={"WWW-Authenticate": "Bearer"})
@@ -110,6 +129,23 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
         result = query_reports(conn, parse_query(request.query_params, cfg.api, clock.now()))
         request.state.result_count = result["count"]
         return result
+
+    @app.get("/v1/reports/{report_id}", response_model=None)
+    def report_by_id(report_id: str, request: Request,
+                     conn: sqlite3.Connection = Depends(get_conn)) -> dict | JSONResponse:
+        # report_id is taken as text and checked here, so a bad id gets our 400 error
+        # body (REQ-05) rather than FastAPI's default 422.
+        if request.query_params:
+            raise QueryError("this endpoint takes no parameters")
+        if not re.fullmatch(r"[1-9][0-9]{0,17}", report_id):
+            raise QueryError("report id must be a positive integer")
+        row = conn.execute("SELECT report_id, cluster_id, generated_at, body_json FROM report WHERE report_id = ?",
+                           (int(report_id),)).fetchone()
+        if row is None:
+            return JSONResponse({"error": "report not found"}, status_code=404)
+        request.state.result_count = 1
+        return {"report_id": row["report_id"], "cluster_id": row["cluster_id"],
+                "generated_at": row["generated_at"], "body": json.loads(row["body_json"])}
 
     @app.get("/v1/integrity")
     def integrity(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
