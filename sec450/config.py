@@ -74,7 +74,7 @@ class RuleConfig(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _pattern_rule_has_patterns(self) -> "RuleConfig":
+    def _pattern_rule_has_patterns(self) -> RuleConfig:
         if self.kind == "pattern" and not self.patterns:
             raise ValueError(f"rule {self.id}: a pattern rule needs at least one pattern")
         return self
@@ -85,7 +85,7 @@ class DetectionConfig(BaseModel):
     rules: list[RuleConfig]
 
     @model_validator(mode="after")
-    def _unique_ids(self) -> "DetectionConfig":
+    def _unique_ids(self) -> DetectionConfig:
         ids = [r.id for r in self.rules]
         if len(ids) != len(set(ids)):
             raise ValueError("rule ids must be unique")
@@ -121,7 +121,8 @@ class RetentionConfig(BaseModel):
 
 
 class ApiConfig(BaseModel):
-    host: str = "0.0.0.0"
+    # Inside its container; only Docker's published port reaches it.
+    host: str = "0.0.0.0"  # noqa: S104  # nosec B104
     port: int = 8443
     tls_cert: Path = Path("certs/server.crt")
     tls_key: Path = Path("certs/server.key")
@@ -143,7 +144,7 @@ class Config(BaseModel):
     api: ApiConfig = ApiConfig()
 
     @model_validator(mode="after")
-    def _unique_sources(self) -> "Config":
+    def _unique_sources(self) -> Config:
         names = [s.name for s in self.sources]
         if len(names) != len(set(names)):
             raise ValueError("source names must be unique")

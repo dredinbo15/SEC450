@@ -1,10 +1,10 @@
 """UTC timestamp handling and the injectable clock used as a test hook."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-UTC = timezone.utc
+UTC = UTC
 
 
 class Clock:

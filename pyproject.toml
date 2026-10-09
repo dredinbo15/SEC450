@@ -1,0 +1,29 @@
+# Tool settings only; dependencies live in requirements*.txt.
+
+[tool.ruff]
+target-version = "py311"     # the Docker image runs 3.12; 3.11 keeps older dev venvs working
+line-length = 120
+
+[tool.ruff.lint]
+# E/W style, F pyflakes (real bugs), I import order, B bugbear, UP modern syntax, S bandit-style security
+select = ["E", "W", "F", "I", "B", "UP", "S"]
+ignore = [
+    "S608",   # SQL built from fixed fragments + ? placeholders; user values are never formatted in
+    "B008",   # FastAPI's Depends(...) in argument defaults is the framework's documented pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S311"]   # asserts, fake secrets and non-crypto random are fine in tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+plugins = ["pydantic.mypy"]   # understands pydantic field defaults
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+skips = ["B608"]   # same reason as ruff S608 above

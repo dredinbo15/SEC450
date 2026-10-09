@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,7 +12,7 @@ from sec450.db import connect, init_db, transaction
 from sec450.timeutil import FixedClock, iso
 
 ROOT = Path(__file__).resolve().parents[1]
-T0 = datetime(2026, 10, 8, 14, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 10, 8, 14, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def insert_events(conn, events: list[dict], source: str = "app", collected_at: s
         c.execute("INSERT INTO batch VALUES (?, ?, ?, ?, ?, ?)",
                   (batch_id, source, collected_at, len(lines), prev,
                    hashchain.batch_hash(prev, batch_id, source, collected_at, lines)))
-        for seq, (text, e) in enumerate(zip(lines, events)):
+        for seq, (text, e) in enumerate(zip(lines, events, strict=True)):
             raw_id = c.execute("INSERT INTO raw_line (batch_id, seq, text, status) VALUES (?, ?, ?, 'parsed')",
                                (batch_id, seq, text)).lastrowid
             row = {"ts": collected_at, "source": source, "host": "h", "client_ip": "203.0.113.5", "action": "GET",

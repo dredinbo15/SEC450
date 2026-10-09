@@ -186,6 +186,6 @@ def test_forwarded_ip_trust(cfg, conn, clock, geoip):  # AC-05
     # Rows come back in source order (nginx_access, then app); match the cases the same way.
     ordered = [c for c in cases if c[0] == "nginx_access"] + [c for c in cases if c[0] == "app"]
     assert len(rows) == 20
-    for (_, peer, xff, expected), (client_ip, _, _, asn, country, _) in zip(ordered, rows):
+    for (_, peer, xff, expected), (client_ip, _, _, asn, country, _) in zip(ordered, rows, strict=True):
         assert client_ip == expected, (peer, xff)
         assert (asn, country) == geoip.lookup(expected)   # enrichment is for the resolved requester

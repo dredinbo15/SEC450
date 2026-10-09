@@ -11,10 +11,10 @@ import logging
 import os
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
 
 from . import hashchain
 from .config import Config, SourceConfig
@@ -124,6 +124,7 @@ class Collector:
                 (batch_id, source.name, collected_at, len(result.lines), prev, digest),
             )
             for seq, text in enumerate(result.lines):
+                reason: str | None  # None = stored as an event; text = quarantine reason
                 try:
                     ev = parse(text, ctx)
                 except ParseError as exc:

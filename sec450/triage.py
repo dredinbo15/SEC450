@@ -10,7 +10,7 @@ import json
 import logging
 import sqlite3
 from datetime import timedelta
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import anthropic
 from pydantic import BaseModel, ValidationError
@@ -77,7 +77,7 @@ class ClaudeTriageClient:
                                           timeout=cfg.timeout_seconds, max_retries=0)
 
     def assess(self, payload: dict) -> TriageResult:
-        request = dict(
+        request: dict[str, Any] = dict(
             model=self.cfg.model,
             max_tokens=4096,
             system=SYSTEM_PROMPT,

@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from ..models import ParsedEvent, ParseError
+from ..models import Outcome, ParsedEvent, ParseError
 from ..timeutil import to_utc
 from .common import ParseContext, normalize_ip
 
@@ -14,7 +14,7 @@ SYSLOG_RE = re.compile(
     r"(?P<host>\S+) (?P<prog>[\w\-.]+)(?:\[(?P<pid>\d+)\])?: (?P<msg>.*)$"
 )
 
-MESSAGES: list[tuple[re.Pattern[str], str, str]] = [
+MESSAGES: list[tuple[re.Pattern[str], str, Outcome]] = [
     (re.compile(r"^Failed (?:password|publickey|keyboard-interactive/pam) for (?:invalid user )?"
                 r"(?P<user>\S+) from (?P<ip>\S+) port \d+"), "ssh_login", "failure"),
     (re.compile(r"^Accepted (?:password|publickey|keyboard-interactive/pam) for (?P<user>\S+) "

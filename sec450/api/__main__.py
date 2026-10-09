@@ -19,6 +19,8 @@ def main() -> None:
         proxy_headers=False, server_header=False,
     )
     config.load()
+    if config.ssl is None:  # uvicorn builds this from the cert/key above
+        raise RuntimeError("TLS is not configured; refusing to serve plain HTTP")
     config.ssl.minimum_version = ssl.TLSVersion.TLSv1_2
     uvicorn.Server(config).run()
 

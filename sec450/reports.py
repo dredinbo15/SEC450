@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from typing import cast
 
 from . import hashchain
 from .config import Config
@@ -102,6 +103,6 @@ def generate_pending_reports(conn: sqlite3.Connection, cfg: Config, clock: Clock
                 "INSERT INTO report (cluster_id, generated_at, body_json) VALUES (?, ?, ?)",
                 (cluster["cluster_id"], iso(clock.now()), json.dumps(body, ensure_ascii=False))).lastrowid
             c.execute("UPDATE cluster SET state = 'REPORTED' WHERE cluster_id = ?", (cluster["cluster_id"],))
-        created.append(rid)
+        created.append(cast(int, rid))  # lastrowid is always set after an INSERT
         log.info("report %s generated for cluster %s", rid, cluster["cluster_id"])
     return created

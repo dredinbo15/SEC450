@@ -11,7 +11,8 @@ MASK = "[REDACTED]"
 ALLOWED_FIELDS = ("ts", "source", "client_ip", "username", "action", "target", "outcome",
                   "status_code", "bytes_sent", "asn", "country", "clock_anomaly")
 
-SECRET_NAMES = (r"pass(?:word|wd)?|pwd|secret|token|access_token|refresh_token|id_token|"
+# Parameter/header names whose values get masked (a pattern, not a password: hence the noqa/nosec).
+SECRET_NAMES = (r"pass(?:word|wd)?|pwd|secret|token|access_token|refresh_token|id_token|"  # noqa: S105  # nosec B105
                 r"api[_-]?key|apikey|key|auth|authorization|session(?:id)?|sid|cookie|jwt|signature|sig")
 
 PATTERNS: list[tuple[re.Pattern[str], str]] = [

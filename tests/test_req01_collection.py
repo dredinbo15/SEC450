@@ -3,7 +3,7 @@ import ipaddress
 import json
 import sqlite3
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -20,13 +20,13 @@ from sec450.timeutil import FixedClock, iso
 
 from .conftest import ROOT
 
-NOW = datetime(2026, 10, 8, 15, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 8, 15, 0, tzinfo=UTC)
 TZ = "America/Indiana/Indianapolis"  # EDT (UTC-4) in October, EST (UTC-5) after 1 Nov 2026 02:00
 PROXY = [ipaddress.ip_network("172.20.0.10/32")]
 
 
 def U(*args) -> datetime:
-    return datetime(*args, tzinfo=timezone.utc)
+    return datetime(*args, tzinfo=UTC)
 
 
 def E(ts, action, target, outcome, client_ip=None, username=None, api_key_id=None,
@@ -216,8 +216,10 @@ def test_interval_defaults_to_60(tmp_path):  # REQ-01 default
 
 
 TAGGED = {
-    "nginx_access": lambda i: f'198.51.100.7 - - [08/Oct/2026:10:00:00 -0400] "GET /tag/{i} HTTP/1.1" 200 1 "-" "ua" "-"',
-    "nginx_error": lambda i: f'2026/10/08 10:00:00 [error] 1#1: *1 x, client: 198.51.100.7, request: "GET /tag/{i} HTTP/1.1"',
+    "nginx_access": lambda i: (f'198.51.100.7 - - [08/Oct/2026:10:00:00 -0400] "GET /tag/{i} HTTP/1.1" '
+                               f'200 1 "-" "ua" "-"'),
+    "nginx_error": lambda i: (f'2026/10/08 10:00:00 [error] 1#1: *1 x, client: 198.51.100.7, '
+                              f'request: "GET /tag/{i} HTTP/1.1"'),
     "ssh_auth": lambda i: f"Oct  8 10:00:00 ssh01 sshd[1]: Failed password for u{i} from 198.51.100.7 port 1 ssh2",
     "app": lambda i: json.dumps({"ts": "2026-10-08T14:00:00Z", "event": "view", "outcome": "success",
                                  "path": f"/tag/{i}"}),
@@ -274,7 +276,8 @@ def test_no_loss_or_duplication(cfg, conn, clock, fail_commit):  # AC-03
         for half in range(2):
             with path.open("ab") as fh:
                 for _ in range(100):
-                    fh.write((TAGGED["nginx_access"](written) + "\n").encode()); written += 1
+                    fh.write((TAGGED["nginx_access"](written) + "\n").encode())
+                    written += 1
             if cycle == 3 and half == 0:
                 path.replace(path.with_name(path.name + ".1"))  # create-style rotation (logrotate + USR1)
         clock.advance(60)

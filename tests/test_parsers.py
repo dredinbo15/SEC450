@@ -1,12 +1,12 @@
-from datetime import datetime, timezone
 import ipaddress
+from datetime import UTC, datetime
 
 import pytest
 
 from sec450.models import ParseError
 from sec450.parsers import PARSERS, ParseContext
 
-NOW = datetime(2026, 10, 8, 15, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 8, 15, 0, tzinfo=UTC)
 TZ = "America/Indiana/Indianapolis"
 PROXY = [ipaddress.ip_network("172.20.0.10/32")]
 
@@ -17,7 +17,7 @@ def ctx(tz=TZ):
 
 def test_local_time_converts_to_utc():  # AC-02
     ev = PARSERS["app"]('{"ts": "2026-10-08T10:00:00", "event": "login", "outcome": "failure"}', ctx())
-    assert ev.ts == datetime(2026, 10, 8, 14, 0, tzinfo=timezone.utc)
+    assert ev.ts == datetime(2026, 10, 8, 14, 0, tzinfo=UTC)
 
 
 def test_fall_back_hour_converts_without_error():  # AC-02
@@ -31,7 +31,7 @@ def test_nginx_access_fields():
     ev = PARSERS["nginx_access"](line, ctx())
     assert (ev.client_ip, ev.username, ev.target, ev.status_code, ev.bytes_sent, ev.outcome) == \
         ("198.51.100.7", "alice", "/admin?id=1", 404, 512, "failure")
-    assert ev.ts == datetime(2026, 10, 8, 14, 0, tzinfo=timezone.utc)
+    assert ev.ts == datetime(2026, 10, 8, 14, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize("peer,expected", [("172.20.0.10", "203.0.113.9"), ("198.51.100.1", "198.51.100.1")])

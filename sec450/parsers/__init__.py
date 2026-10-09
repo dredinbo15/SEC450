@@ -1,7 +1,7 @@
 """Parser registry: source kind -> parse(line, ctx) -> ParsedEvent."""
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from ..models import ParsedEvent
 from .app import parse_app

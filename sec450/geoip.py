@@ -19,7 +19,7 @@ class GeoIP:
         self._country = self._open(country_db)
 
     @classmethod
-    def from_config(cls, cfg: GeoIPConfig) -> "GeoIP":
+    def from_config(cls, cfg: GeoIPConfig) -> GeoIP:
         return cls(cfg.asn_db, cfg.country_db)
 
     @staticmethod
