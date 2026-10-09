@@ -6,3 +6,5 @@ pydantic>=2.7            # config + request/response validation
 PyYAML>=6.0              # config.yaml (REQ-12)
 geoip2>=4.8              # offline GeoLite2 lookups (REQ-02, DD-13)
 tzdata>=2024.1           # IANA zones for zoneinfo on Windows/slim images
+streamlit>=1.37          # analyst dashboard (st.fragment auto-refresh)
+httpx>=0.27              # dashboard's API client

@@ -99,3 +99,10 @@ api:
   default_span_hours: 24
   default_limit: 100
   max_limit: 1000
+
+dashboard:
+  api_url: https://localhost:8443   # the dashboard reads only through the audited API (DD-10, DD-12)
+  api_key: null                 # a key from `python -m sec450.keys create`; falls back to SEC450_API_KEY
+  ca_cert: certs/server.crt     # trust anchor for the API's TLS certificate (null = system CAs)
+  refresh_seconds: 30           # 4 API calls per refresh, well under the 60/min rate limit
+  lookback_hours: 24

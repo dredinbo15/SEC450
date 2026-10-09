@@ -132,6 +132,18 @@ class ApiConfig(BaseModel):
     max_limit: int = 1000
 
 
+class DashboardConfig(BaseModel):
+    """The dashboard is an API client like any other (DD-10, DD-12): no direct database access."""
+    api_url: str = "https://localhost:8443"
+    api_key: str | None = None
+    ca_cert: Path | None = None
+    refresh_seconds: int = Field(30, ge=5)
+    lookback_hours: int = Field(24, ge=1)
+
+    def resolved_api_key(self) -> str | None:
+        return self.api_key or os.environ.get("SEC450_API_KEY")
+
+
 class Config(BaseModel):
     database_path: Path = Path("data/sec450.db")
     sources: list[SourceConfig]
@@ -141,6 +153,7 @@ class Config(BaseModel):
     triage: TriageConfig = TriageConfig()
     retention: RetentionConfig = RetentionConfig()
     api: ApiConfig = ApiConfig()
+    dashboard: DashboardConfig = DashboardConfig()
 
     @model_validator(mode="after")
     def _unique_sources(self) -> "Config":
