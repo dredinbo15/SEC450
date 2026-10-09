@@ -117,7 +117,7 @@ class Collector:
             max_id = c.execute("SELECT COALESCE(MAX(batch_id), 0) FROM batch").fetchone()[0]
             batch_id = max(max_id + 1, first_id or 1)
             prev = hashchain.last_hash(c, "batch")
-            digest = hashchain.batch_hash(prev, batch_id, source.name, collected_at, result.lines)
+            digest = hashchain.batch_hash(prev, source.name, collected_at, result.lines)
             c.execute(
                 "INSERT INTO batch (batch_id, source, collected_at, line_count, prev_hash, hash) "
                 "VALUES (?, ?, ?, ?, ?, ?)",

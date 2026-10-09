@@ -24,6 +24,15 @@ class SourceConfig(BaseModel):
     path: Path
     timezone: str = "UTC"
 
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, v: str) -> str:
+        # Letters, digits, "_", "-", "." only: the name is part of the batch hash,
+        # where "|" separates fields (hashchain.batch_hash).
+        if not re.fullmatch(r"[A-Za-z0-9_.\-]+", v):
+            raise ValueError(f"source name {v!r} may contain only letters, digits, '_', '-' and '.'")
+        return v
+
     @field_validator("timezone")
     @classmethod
     def _valid_tz(cls, v: str) -> str:

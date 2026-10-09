@@ -14,8 +14,20 @@ def _digest(payload: Any) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-def batch_hash(prev_hash: str, batch_id: int, source: str, collected_at: str, lines: list[str]) -> str:
-    return _digest([prev_hash, batch_id, source, collected_at, lines])
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def batch_hash(prev_hash: str, source: str, collected_at: str, lines: list[str]) -> str:
+    """hash = SHA-256(prev_hash | source | collected_at | SHA-256(lines))   (DD-07)
+
+    "|" is the field separator (the "‖" in the design doc). It cannot be
+    ambiguous: hashes are hex, collected_at is ISO 8601, and source names are
+    validated in config.py to contain no "|". Lines are joined with "\n"; a
+    stored line never contains a newline because the collector splits on it.
+    """
+    lines_hash = _sha256("\n".join(lines))
+    return _sha256("|".join((prev_hash, source, collected_at, lines_hash)))
 
 
 def audit_hash(prev_hash: str, fields: dict[str, Any]) -> str:
@@ -57,7 +69,7 @@ def verify_batches(conn: sqlite3.Connection) -> dict[str, Any]:
             reason = "prev_hash does not match preceding batch"
         elif len(lines) != b["line_count"]:
             reason = "line count mismatch"
-        elif batch_hash(b["prev_hash"], b["batch_id"], b["source"], b["collected_at"], lines) != b["hash"]:
+        elif batch_hash(b["prev_hash"], b["source"], b["collected_at"], lines) != b["hash"]:
             reason = "content hash mismatch"
         else:
             expected_prev = b["hash"]

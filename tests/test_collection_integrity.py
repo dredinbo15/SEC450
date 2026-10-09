@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -58,6 +59,23 @@ def test_raw_line_update_rejected(conn):  # AC-20
     insert_events(conn, [{}])
     with pytest.raises(Exception, match="immutable"):
         conn.execute("UPDATE raw_line SET text = 'x'")
+
+
+def test_ac21_batch_hash_matches_design_formula(conn):
+    """DD-07: hash = SHA-256(prev_hash | source | collected_at | SHA-256(lines)), recomputed by hand."""
+    insert_events(conn, [{}, {}], source="ssh_auth")
+    b = conn.execute("SELECT * FROM batch").fetchone()
+    lines = [r[0] for r in conn.execute("SELECT text FROM raw_line WHERE batch_id = ? ORDER BY seq", (b["batch_id"],))]
+    lines_hash = hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    expected = hashlib.sha256(f"{'0' * 64}|ssh_auth|{b['collected_at']}|{lines_hash}".encode()).hexdigest()
+    assert b["prev_hash"] == "0" * 64 and b["hash"] == expected
+
+
+def test_ac21_source_name_cannot_contain_separator(cfg):
+    data = cfg.model_dump(mode="json")
+    data["sources"][0]["name"] = "bad|name"
+    with pytest.raises(ValueError, match="source name"):
+        Config.model_validate(data)
 
 
 def test_tamper_detection(conn):  # AC-21
