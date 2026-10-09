@@ -4,6 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+import yaml
 
 from sec450.collector import Collector
 from sec450.config import Config
@@ -91,6 +92,22 @@ def test_tamper_detection(conn):  # AC-21
     conn.execute("UPDATE raw_line SET text = ? WHERE batch_id = 23", (original,))
     conn.execute("DELETE FROM batch WHERE batch_id = 30")
     assert verify_batches(conn)["batch_id"] in (30, 31)
+
+
+def test_ac21_verify_command(cfg, conn, tmp_path, capsys):
+    """`python -m sec450.verify` exits 0 when intact and 1 with the broken batch id when not."""
+    from sec450 import verify
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.safe_dump(cfg.model_dump(mode="json")), encoding="utf-8")
+    for _ in range(3):
+        insert_events(conn, [{}])
+    assert verify.main(["--config", str(config_file)]) == 0
+
+    conn.execute("DROP TRIGGER raw_line_no_update")
+    conn.execute("UPDATE raw_line SET text = 'tampered' WHERE batch_id = 2")
+    capsys.readouterr()
+    assert verify.main(["--config", str(config_file)]) == 1
+    assert json.loads(capsys.readouterr().out)["batches"]["batch_id"] == 2
 
 
 def test_retention_boundaries(cfg, conn, clock):  # AC-22
