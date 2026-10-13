@@ -1,0 +1,14 @@
+# cloudflared ingress for the optional "tunnel" profile (see docker-compose.yml).
+# The public hostname is set by the tunnel's DNS route in Cloudflare
+# (cloudflared tunnel route dns <tunnel> seclog.redinbo.win), not here, so this
+# file holds no deployment settings. Everything the tunnel receives goes to the api.
+
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - service: https://api:8443
+    originRequest:
+      # The api's self-signed certificate is issued to "localhost" (docker/entrypoint.sh).
+      # Verify it against that same certificate instead of turning verification off.
+      originServerName: localhost
+      caPool: /certs/server.crt

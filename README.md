@@ -27,6 +27,23 @@ docker compose logs -f collector                             # JSON logs
 
 `-k` accepts the self-signed certificate created on first start. In Windows PowerShell 5.1, type `curl.exe`, because `curl` is an alias for something else there. To use real Claude triage, set `triage.client: claude` in `config.yaml`, put `ANTHROPIC_API_KEY` in `.env`, and run `docker compose up -d` again. `docker compose down -v` stops everything and deletes the data volumes.
 
+### Public access through the Cloudflare tunnel
+
+On the host that runs the stack, the optional `cloudflared` service publishes the API at `https://seclog.redinbo.win`. It uses the existing locally managed tunnel (credentials JSON) and opens no ports. On that host:
+
+```sh
+mkdir -p secrets
+cp ~/.cloudflared/<tunnel-uuid>.json secrets/cloudflared.json
+chmod 644 secrets/cloudflared.json      # the cloudflared image runs as a non-root user
+```
+
+In `.env`, set `COMPOSE_PROFILES=tunnel` and `CLOUDFLARE_TUNNEL_ID=<tunnel-uuid>`, then run `docker compose up -d`. The hostname comes from the tunnel's DNS route (`cloudflared tunnel route dns <tunnel> seclog.redinbo.win`), and Cloudflare serves its own certificate, so `-k` is not needed:
+
+```sh
+curl -H "Authorization: Bearer <key>" https://seclog.redinbo.win/v1/reports
+docker compose logs cloudflared          # expect "Registered tunnel connection"
+```
+
 ## Running the tests and checks
 
 ```sh

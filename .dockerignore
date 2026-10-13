@@ -2,6 +2,7 @@
 .git
 .venv
 .env
+secrets/
 config.yaml
 data/
 certs/

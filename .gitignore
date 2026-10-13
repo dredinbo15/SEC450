@@ -9,6 +9,7 @@ certs/
 geoip/*.mmdb
 .pytest_cache/
 .env
+secrets/
 data/
 .mypy_cache/
 .ruff_cache/

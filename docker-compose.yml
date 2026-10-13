@@ -80,6 +80,24 @@ services:
       retries: 5
       start_period: 20s
 
+  # Optional public access through a Cloudflare tunnel (seclog.redinbo.win).
+  # Only starts with the "tunnel" profile: set COMPOSE_PROFILES=tunnel in .env.
+  # The connection is outbound, so no port is published and the api stays the
+  # only entry point (DD-10).
+  cloudflared:
+    image: cloudflare/cloudflared:2024.12.2
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml",
+              "run", "${CLOUDFLARE_TUNNEL_ID:-}"]
+    volumes:
+      - ./docker/cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./secrets/cloudflared.json:/etc/cloudflared/credentials.json:ro
+      - certs:/certs:ro                   # the api's certificate, to verify the origin
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   ssh-logs:
   db:
