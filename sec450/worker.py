@@ -25,6 +25,7 @@ from .logjson import setup_logging
 from .mock_llm import MockLLMClient
 from .reports import generate_pending_reports
 from .retention import run_retention
+from .siem import forward_pending_reports
 from .timeutil import Clock
 from .triage import ClaudeTriageClient, LLMClient, run_triage
 
@@ -54,9 +55,11 @@ def collection_cycle(collector: Collector, conn: sqlite3.Connection, cfg: Config
 
 
 def analysis_cycle(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMClient | None) -> None:
-    """Triage settled clusters, then write reports for finished high/critical ones (REQ-04, REQ-06)."""
+    """Triage settled clusters, write reports for finished high/critical ones (REQ-04, REQ-06),
+    then push new reports to the SIEM when one is configured (DD-17)."""
     run_triage(conn, cfg, clock, client)
     generate_pending_reports(conn, cfg, clock)
+    forward_pending_reports(conn, cfg, clock)
 
 
 def analysis_loop(cfg: Config, clock: Clock, stop: threading.Event) -> None:

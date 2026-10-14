@@ -143,6 +143,16 @@ class ApiConfig(BaseModel):
     max_limit: int = 1000
 
 
+class SiemConfig(BaseModel):
+    """Pushes every report to a SIEM as one JSON line over TCP syslog (DD-17)."""
+    enabled: bool = False
+    host: str = "wazuh.manager"
+    port: int = Field(514, ge=1, le=65535)
+    timeout_seconds: float = Field(5, gt=0)
+    batch_size: int = Field(100, ge=1)
+    report_url: str | None = None   # e.g. https://seclog.redinbo.win/v1/reports/ ; the report id is appended
+
+
 class Config(BaseModel):
     database_path: Path = Path("data/sec450.db")
     sources: list[SourceConfig]
@@ -152,6 +162,7 @@ class Config(BaseModel):
     triage: TriageConfig = TriageConfig()
     retention: RetentionConfig = RetentionConfig()
     api: ApiConfig = ApiConfig()
+    siem: SiemConfig = SiemConfig()
 
     @model_validator(mode="after")
     def _unique_sources(self) -> Config:

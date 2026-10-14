@@ -5,7 +5,6 @@ The test drives the same cycle functions the collector service runs
 """
 import json
 import logging
-import shutil
 from datetime import timedelta
 from pathlib import Path
 
@@ -24,15 +23,6 @@ from .conftest import T0
 
 FIXTURE = Path(__file__).parent / "fixtures" / "logs" / "ssh_bruteforce.log"
 ATTACKER = "203.0.113.50"
-
-
-@pytest.fixture
-def slice_cfg(cfg):
-    """Only the SSH source, fed from the fixture file (other sources would just open gaps)."""
-    ssh = next(s for s in cfg.sources if s.kind == "ssh_auth")
-    shutil.copyfile(FIXTURE, ssh.path)
-    cfg.sources = [ssh]
-    return cfg
 
 
 def _run_pipeline(cfg, conn, clock, llm):

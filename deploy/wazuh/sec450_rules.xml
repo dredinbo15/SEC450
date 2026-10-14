@@ -1,0 +1,35 @@
+<!--
+  SEC450 incident reports, pushed by SEC450's collector as one JSON line each
+  (SEC450 sec450/siem.py). Wazuh's built-in JSON decoder extracts the fields;
+  these rules turn the SEC450 severity into a Wazuh alert level:
+    low -> 3, medium -> 7, high -> 10, critical -> 13
+  The full report (timeline, raw log lines) stays behind the SEC450 API at
+  data.sec450.report_url.
+-->
+<group name="sec450,">
+
+  <rule id="100450" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="sec450.report_id">^\d+$</field>
+    <description>SEC450: $(sec450.summary)</description>
+  </rule>
+
+  <rule id="100451" level="7">
+    <if_sid>100450</if_sid>
+    <field name="sec450.severity">^medium$</field>
+    <description>SEC450 medium: $(sec450.summary)</description>
+  </rule>
+
+  <rule id="100452" level="10">
+    <if_sid>100450</if_sid>
+    <field name="sec450.severity">^high$</field>
+    <description>SEC450 high: $(sec450.summary)</description>
+  </rule>
+
+  <rule id="100453" level="13">
+    <if_sid>100450</if_sid>
+    <field name="sec450.severity">^critical$</field>
+    <description>SEC450 critical: $(sec450.summary)</description>
+  </rule>
+
+</group>

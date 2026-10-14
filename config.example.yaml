@@ -101,3 +101,11 @@ api:
   default_span_hours: 24
   default_limit: 100
   max_limit: 1000
+
+siem:                           # push every report to a SIEM (DD-17); see docs/siem.md
+  enabled: false
+  host: wazuh.manager           # Wazuh manager on the shared "siem" Docker network
+  port: 514                     # Wazuh's TCP syslog input
+  timeout_seconds: 5
+  batch_size: 100
+  report_url: null              # e.g. https://seclog.redinbo.win/v1/reports/ (the report id is appended)

@@ -44,6 +44,10 @@ curl -H "Authorization: Bearer <key>" https://seclog.redinbo.win/v1/reports
 docker compose logs cloudflared          # expect "Registered tunnel connection"
 ```
 
+### Pushing reports to a SIEM (Wazuh)
+
+The collector can push every report to a Wazuh manager as it is generated (DD-17). It is off by default; see [docs/siem.md](docs/siem.md) for the Wazuh deployment, the alert rules and secure remote access to the dashboard.
+
 ## Running the tests and checks
 
 ```sh
@@ -304,3 +308,4 @@ Every requirement has at least one acceptance criterion.
 | DD-13 | Offline GeoIP | Local GeoLite2 lookups | An online IP-lookup API | Online is more current but adds an outside dependency and shares every IP with a third party. Offline is fast and private but slightly stale. | REQ-02; reliability, privacy |
 | DD-14 | Detect and report, never block | No automated blocking | Automatically block flagged IPs | Blocking is useful but a false alarm could cut off real traffic and adds scope. A person stays in control. | REQ-03, REQ-06; safety, scope |
 | DD-15 | Python with FastAPI | Python throughout, FastAPI for the API | Go or Node.js | Go is faster, but the whole team knows Python and FastAPI handles validation almost for free. Database indexing, not language, will decide REQ-10. | REQ-05, REQ-10, REQ-12; maintainability |
+| DD-17 | Push reports to a SIEM | The collector sends each report to Wazuh as one JSON line over TCP syslog on a private Docker network, and records delivery so an outage only delays alerts | Have the SIEM poll /v1/reports | Polling needs no new code but adds up to a poll interval of delay and another long-lived API key. Pushing is near real-time; the alert carries only triage fields and a link, so raw log lines stay behind the authenticated, audited API. | REQ-06, DD-10, DD-12; timeliness, reliability |

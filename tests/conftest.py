@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +25,15 @@ def cfg(tmp_path: Path) -> Config:
     data["geoip"] = {}
     data["collector"]["retry_delay_seconds"] = 0
     return Config.model_validate(data)
+
+
+@pytest.fixture
+def slice_cfg(cfg: Config) -> Config:
+    """Only the SSH source, fed from the brute-force fixture (other sources would just open gaps)."""
+    ssh = next(s for s in cfg.sources if s.kind == "ssh_auth")
+    shutil.copyfile(ROOT / "tests" / "fixtures" / "logs" / "ssh_bruteforce.log", ssh.path)
+    cfg.sources = [ssh]
+    return cfg
 
 
 @pytest.fixture

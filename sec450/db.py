@@ -97,6 +97,12 @@ CREATE TABLE IF NOT EXISTS report (
     body_json     TEXT NOT NULL
 );
 
+-- Reports already pushed to the SIEM (DD-17). Rows go when retention deletes the report.
+CREATE TABLE IF NOT EXISTS siem_delivery (
+    report_id     INTEGER PRIMARY KEY REFERENCES report(report_id) ON DELETE CASCADE,
+    delivered_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS api_key (
     key_id      TEXT PRIMARY KEY,
     key_hash    TEXT NOT NULL UNIQUE,

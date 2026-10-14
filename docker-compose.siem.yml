@@ -1,0 +1,16 @@
+# Optional: lets the collector push reports to a Wazuh manager (DD-17, docs/siem.md).
+# Enable it by adding this file to COMPOSE_FILE in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.siem.yml
+# and setting siem.enabled: true in config.yaml. The "siem" network is created by
+# the Wazuh deployment, so start Wazuh first.
+
+services:
+  collector:
+    networks:
+      - default
+      - siem
+
+networks:
+  siem:
+    external: true
+    name: siem
