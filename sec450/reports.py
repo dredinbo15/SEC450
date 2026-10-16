@@ -49,6 +49,10 @@ def build_report(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) ->
               "received_at": cluster["ai_received_at"]}
     else:
         ai = {"status": "unavailable", "label": "AI-generated, advisory only"}
+        skipped = conn.execute("SELECT 1 FROM triage_budget WHERE cluster_id = ? AND outcome = 'skipped'",
+                               (cluster["cluster_id"],)).fetchone()
+        if skipped:
+            ai["reason"] = "daily AI limit reached"
 
     return {
         "report_version": REPORT_VERSION,

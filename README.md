@@ -25,7 +25,7 @@ docker compose exec collector python -m sec450.verify        # check both hash c
 docker compose logs -f collector                             # JSON logs
 ```
 
-`-k` accepts the self-signed certificate created on first start. In Windows PowerShell 5.1, type `curl.exe`, because `curl` is an alias for something else there. To use real Claude triage, set `triage.client: claude` in `config.yaml`, put `ANTHROPIC_API_KEY` in `.env`, and run `docker compose up -d` again. `docker compose down -v` stops everything and deletes the data volumes.
+`-k` accepts the self-signed certificate created on first start. In Windows PowerShell 5.1, type `curl.exe`, because `curl` is an alias for something else there. To use real Claude triage, set `triage.client: claude` in `config.yaml`, put `ANTHROPIC_API_KEY` in `.env`, and run `docker compose up -d` again. To cap cost, set `triage.max_calls_per_day` (for example `1`): once a UTC day's budget is spent, clusters are still reported, with the AI assessment marked unavailable ("daily AI limit reached"). `docker compose down -v` stops everything and deletes the data volumes.
 
 ### Public access through the Cloudflare tunnel
 

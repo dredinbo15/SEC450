@@ -75,3 +75,63 @@ def test_ac11_llm_failure_path_still_reports(cfg, conn, clock, mode):
     assert conn.execute("SELECT state FROM cluster").fetchone()[0] == "REPORTED"
     body = conn.execute("SELECT body_json FROM report").fetchone()[0]
     assert '"status": "unavailable"' in body
+
+
+def _budget(conn) -> list[tuple]:
+    return [tuple(r) for r in conn.execute("SELECT cluster_id, day, outcome FROM triage_budget ORDER BY cluster_id")]
+
+
+def test_daily_ai_limit_skips_later_clusters_until_next_utc_day(cfg, conn, clock):
+    """triage.max_calls_per_day: once spent, clusters are still reported, marked "daily AI limit reached"."""
+    cfg.triage.max_calls_per_day = 1
+    llm = MockLLMClient("ok")
+    for sev in ("medium", "high"):
+        _make_cluster(conn, sev)
+    clock.advance(600)
+    run_triage(conn, cfg, clock, llm)
+    assert llm.calls == 1
+    assert _states(conn) == [("medium", "TRIAGED", "critical"), ("high", "TRIAGE_UNAVAILABLE", None)]
+    day = clock.now().date().isoformat()
+    assert _budget(conn) == [(1, day, "called"), (2, day, "skipped")]
+
+    generate_pending_reports(conn, cfg, clock)       # the skipped high cluster is still reported
+    body = conn.execute("SELECT body_json FROM report").fetchone()[0]
+    assert '"status": "unavailable"' in body and '"reason": "daily AI limit reached"' in body
+
+    clock.advance(24 * 3600)                         # next UTC day: the budget is fresh
+    _make_cluster(conn, "high")
+    clock.advance(600)
+    run_triage(conn, cfg, clock, llm)
+    assert llm.calls == 2 and _states(conn)[-1] == ("high", "TRIAGED", "critical")
+
+
+def test_daily_ai_limit_counts_a_cluster_once(cfg, conn, clock):
+    """Retries do not use extra budget, and a cluster resumed after a crash is not blocked by itself."""
+    cfg.triage.max_calls_per_day = 1
+    _make_cluster(conn, "high")
+    clock.advance(600)
+    llm = MockLLMClient("http_error")
+    run_triage(conn, cfg, clock, llm)
+    assert llm.calls == 3                            # 3 attempts, 1 unit of budget
+    assert [r[2] for r in _budget(conn)] == ["called"]
+
+    conn.execute("UPDATE cluster SET state = 'TRIAGE_PENDING'")   # as if the worker crashed mid-triage
+    run_triage(conn, cfg, clock, MockLLMClient("ok"))
+    assert _states(conn) == [("high", "TRIAGED", "critical")]
+
+
+def test_daily_ai_limit_zero_and_unlimited(cfg, conn, clock):
+    for sev in ("medium", "high"):
+        _make_cluster(conn, sev)
+    clock.advance(600)
+    cfg.triage.max_calls_per_day = 0
+    llm = MockLLMClient("ok")
+    run_triage(conn, cfg, clock, llm)
+    assert llm.calls == 0 and {s for _, s, _ in _states(conn)} == {"TRIAGE_UNAVAILABLE"}
+
+    cfg.triage.max_calls_per_day = None              # the default: no limit
+    _make_cluster(conn, "high")
+    _make_cluster(conn, "high")
+    clock.advance(600)
+    run_triage(conn, cfg, clock, llm)
+    assert llm.calls == 2

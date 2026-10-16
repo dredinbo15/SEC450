@@ -47,7 +47,7 @@ def build_alert(report_id: int, generated_at: str, body: dict, cfg: SiemConfig) 
             "window_start": timeline[0]["ts"] if timeline else None,
             "window_end": timeline[-1]["ts"] if timeline else None,
             "bytes_sent": body.get("data_destination", {}).get("bytes_sent", 0),
-            "ai": {"status": ai.get("status"), "classification": ai.get("classification"),
+            "ai": {"status": ai.get("status"), "reason": ai.get("reason"), "classification": ai.get("classification"),
                    "recommended_severity": ai.get("recommended_severity"), "model": ai.get("model")},
             "integrity": body.get("integrity", {}).get("status"),
             "collection_gaps": len(body.get("collection_gaps", [])),

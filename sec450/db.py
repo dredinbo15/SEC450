@@ -97,6 +97,15 @@ CREATE TABLE IF NOT EXISTS report (
     body_json     TEXT NOT NULL
 );
 
+-- One row per cluster that reached the LLM step: sent ('called') or held back by
+-- triage.max_calls_per_day ('skipped'). The day is the UTC date of that decision.
+CREATE TABLE IF NOT EXISTS triage_budget (
+    cluster_id  INTEGER PRIMARY KEY REFERENCES cluster(cluster_id) ON DELETE CASCADE,
+    day         TEXT NOT NULL,
+    outcome     TEXT NOT NULL CHECK (outcome IN ('called', 'skipped'))
+);
+CREATE INDEX IF NOT EXISTS ix_triage_budget_day ON triage_budget(day, outcome);
+
 -- Reports already pushed to the SIEM (DD-17). Rows go when retention deletes the report.
 CREATE TABLE IF NOT EXISTS siem_delivery (
     report_id     INTEGER PRIMARY KEY REFERENCES report(report_id) ON DELETE CASCADE,

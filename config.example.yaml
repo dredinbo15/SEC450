@@ -85,6 +85,8 @@ triage:
   settle_seconds: 60            # quiet time before a cluster is frozen and triaged
   max_wait_seconds: 180         # triage anyway once a cluster is this old
   worker_interval_seconds: 15
+  max_calls_per_day: null       # clusters sent to Claude per UTC day; later ones are reported as
+                                # "unavailable" (daily AI limit reached). null = no limit
 
 retention:
   event_days: 30

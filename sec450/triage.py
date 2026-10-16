@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
 
 import anthropic
@@ -201,4 +201,31 @@ def run_triage(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMC
                 c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?",
                           (cluster["cluster_id"],))
             continue
+        if not _within_daily_budget(conn, cfg, cluster["cluster_id"], now):
+            continue
         triage_cluster(conn, cluster, cfg, client, clock)
+
+
+def _within_daily_budget(conn: sqlite3.Connection, cfg: Config, cluster_id: int, now: datetime) -> bool:
+    """Record the cluster against today's LLM budget; False (and TRIAGE_UNAVAILABLE) once it is spent.
+
+    A cluster counts once however many retries it needs, and a cluster already
+    recorded as 'called' (picked up again after a crash) is not counted twice.
+    """
+    day = now.date().isoformat()
+    limit = cfg.triage.max_calls_per_day
+    with transaction(conn) as c:
+        if c.execute("SELECT 1 FROM triage_budget WHERE cluster_id = ? AND outcome = 'called'",
+                     (cluster_id,)).fetchone():
+            return True
+        used = c.execute("SELECT COUNT(*) FROM triage_budget WHERE day = ? AND outcome = 'called'",
+                         (day,)).fetchone()[0]
+        allowed = limit is None or used < limit
+        c.execute("INSERT OR REPLACE INTO triage_budget (cluster_id, day, outcome) VALUES (?, ?, ?)",
+                  (cluster_id, day, "called" if allowed else "skipped"))
+        if not allowed:
+            c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?", (cluster_id,))
+    if not allowed:
+        log.info("daily AI limit of %d reached; cluster not sent to the LLM", limit,
+                 extra={"cluster_id": cluster_id})
+    return allowed

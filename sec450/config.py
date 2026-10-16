@@ -119,6 +119,9 @@ class TriageConfig(BaseModel):
     settle_seconds: int = 60
     max_wait_seconds: int = 180
     worker_interval_seconds: int = 15
+    # Clusters sent to the LLM per UTC day; later ones are reported as "unavailable" with
+    # reason "daily AI limit reached". None = no limit.
+    max_calls_per_day: int | None = Field(None, ge=0)
 
     def resolved_api_key(self) -> str | None:
         return self.api_key or os.environ.get("ANTHROPIC_API_KEY")
