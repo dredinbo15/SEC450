@@ -4,7 +4,7 @@
 
 ## Running it
 
-**Status:** thin slice. Only the SSH lab server exists; the nginx and app sources show up as collection gaps until their lab containers are added. Triage uses the mock LLM by default.
+**Status:** all four lab sources run: an SSH server (ssh01), nginx (web01) and a small JSON API app (app01) behind nginx, which is the trusted proxy at 172.20.0.10. `traffic-gen` rotates through one attack per rule (SSH brute force, 404 scan, injection probes, a 12 MB download, app login brute force), one every ~22 minutes, with normal browsing in between. Triage uses the mock LLM by default.
 
 You need Docker Desktop (or Docker Engine with Compose v2.24+). From the repo root:
 
@@ -15,7 +15,7 @@ docker compose up --build -d
 docker compose ps                      # wait until collector and api show "healthy"
 ```
 
-`traffic-gen` sends a burst of failed SSH logins about 15 s after start. Expect the first report within about 3 minutes: up to 60 s until the next collection, 60 s for the cluster to settle, then triage and the report.
+`traffic-gen` starts with a burst of failed SSH logins about 15 s after start. Expect the first report within about 3 minutes: up to 60 s until the next collection, 60 s for the cluster to settle, then triage and the report. Each attack is logged as a `ground_truth` line in `docker compose logs traffic-gen`.
 
 ```sh
 docker compose exec api python -m sec450.keys create         # prints a key once; only its hash is stored

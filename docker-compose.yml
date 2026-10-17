@@ -5,8 +5,8 @@
 #   docker compose up --build
 #
 # Only the api publishes a port (DD-10): https://localhost/ (host 443 -> container 8443).
-# Thin slice: only the SSH lab server exists so far. The nginx and app sources in
-# config.yaml show up as collection gaps until their lab containers are added.
+# Lab: SSH server (ssh01), nginx (web01) and a JSON API app (app01) behind nginx, plus
+# a traffic generator that rotates through one attack per detection rule (DD-03).
 
 name: sec450
 
@@ -35,11 +35,49 @@ services:
       timeout: 3s
       retries: 5
 
+  lab-nginx:
+    build: docker/lab-nginx
+    hostname: web01                       # matches sources[nginx_*].host in config.yaml
+    environment:
+      TZ: America/Indiana/Indianapolis    # matches sources[nginx_*].timezone
+    volumes:
+      - nginx-logs:/var/log/lab-nginx
+    networks:
+      lab:
+        ipv4_address: 172.20.0.10         # collector.trusted_proxies: the app trusts X-Forwarded-For only from here
+    depends_on:
+      - lab-app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  lab-app:
+    build: docker/lab-app
+    hostname: app01                       # matches sources[app].host
+    volumes:
+      - app-logs:/var/log/app
+    networks:
+      - lab
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), 3)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   traffic-gen:
     build: docker/traffic-gen
     depends_on:
       lab-ssh:
         condition: service_healthy
+      lab-nginx:
+        condition: service_healthy
+    networks:
+      - default
+      - lab
     restart: unless-stopped
 
   collector:
@@ -49,6 +87,8 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - db:/data                          # the one SQLite file, shared with the api (DD-06)
       - ssh-logs:/logs/ssh:ro             # read-only: the collector never changes a log (DD-04, REQ-08)
+      - nginx-logs:/logs/nginx:ro
+      - app-logs:/logs/app:ro
     healthcheck:
       # Healthy while the collection loop keeps touching its heartbeat file (see sec450/worker.py).
       test: ["CMD", "python", "-c",
@@ -98,7 +138,16 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+networks:
+  # Web lab network with a fixed range, so nginx's address matches collector.trusted_proxies.
+  lab:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
 volumes:
   ssh-logs:
+  nginx-logs:
+  app-logs:
   db:
   certs:
