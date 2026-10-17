@@ -63,8 +63,10 @@ empty service scripts and the manager never started.
    indexer loads users from that file only once.
 2. **No published ports.** Remove every `ports:` entry. Nothing on the host or
    the LAN can reach Wazuh directly.
-3. **The `siem` network.** Attach `wazuh.manager` to a network named `siem`
-   with subnet `172.30.0.0/24`.
+3. **Networks.** Attach `wazuh.manager` to a network named `siem` with subnet
+   `172.30.0.0/24`, and pin Wazuh's default network to `172.31.0.0/24`.
+   Otherwise Docker may give Wazuh `172.20.0.0/16`, which overlaps SEC450's
+   lab network and stops SEC450 from starting.
 4. **Syslog input** in `config/wazuh_cluster/wazuh_manager.conf`, after the
    existing `<remote>` block:
    ```xml
