@@ -1,6 +1,6 @@
 -r requirements.txt
 pytest>=8
-httpx>=0.27              # FastAPI TestClient
+httpx>=0.27              # FastAPI TestClient (also a runtime dependency)
 ruff>=0.6                # lint + import order (config in pyproject.toml)
 mypy>=1.10               # type checks
 types-PyYAML
