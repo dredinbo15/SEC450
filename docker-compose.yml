@@ -120,6 +120,31 @@ services:
       retries: 5
       start_period: 20s
 
+  # Analyst dashboard (DD-16). It reads only through the api, with its own key
+  # (DASHBOARD_API_KEY in .env), so every view is authenticated and audited. No port is
+  # published; reach it through the dashboard tunnel below (behind Cloudflare Access).
+  dashboard:
+    <<: *app
+    command: ["python", "-m", "streamlit", "run", "sec450/dashboard/app.py",
+              "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true",
+              "--browser.gatherUsageStats=false"]
+    env_file: []                          # needs only its own key, not the secrets in .env
+    environment:
+      HOME: /tmp                          # streamlit writes its settings under $HOME
+      SEC450_API_KEY: ${DASHBOARD_API_KEY:-}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - certs:/certs:ro                   # the api's certificate, to verify it (dashboard.ca_cert)
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   # Optional public access through a Cloudflare tunnel (seclog.redinbo.win).
   # Only starts with the "tunnel" profile: set COMPOSE_PROFILES=tunnel in .env.
   # The connection is outbound, so no port is published and the api stays the
@@ -135,6 +160,22 @@ services:
       - certs:/certs:ro                   # the api's certificate, to verify the origin
     depends_on:
       api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Optional public access to the dashboard through its own Cloudflare tunnel.
+  # Starts with the "dashboard-tunnel" profile. Put Cloudflare Access in front of
+  # the tunnel's hostname first: the dashboard has no login of its own.
+  cloudflared-dashboard:
+    image: cloudflare/cloudflared:2024.12.2
+    profiles: ["dashboard-tunnel"]
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml",
+              "run", "${DASHBOARD_TUNNEL_ID:-}"]
+    volumes:
+      - ./docker/cloudflared/dashboard.yml:/etc/cloudflared/config.yml:ro
+      - ./secrets/cloudflared-dashboard.json:/etc/cloudflared/credentials.json:ro
+    depends_on:
+      dashboard:
         condition: service_healthy
     restart: unless-stopped
 

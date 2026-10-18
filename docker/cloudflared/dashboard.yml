@@ -1,0 +1,10 @@
+# cloudflared ingress for the optional "dashboard-tunnel" profile (see docker-compose.yml).
+# The public hostname comes from the tunnel's DNS route in Cloudflare
+# (cloudflared tunnel route dns <tunnel> <hostname>), so this file holds no
+# deployment settings. Everything the tunnel receives goes to the dashboard.
+# Cloudflare Access must protect that hostname: the dashboard has no login.
+
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - service: http://dashboard:8501

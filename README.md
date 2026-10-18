@@ -44,6 +44,17 @@ curl -H "Authorization: Bearer <key>" https://seclog.redinbo.win/v1/reports
 docker compose logs cloudflared          # expect "Registered tunnel connection"
 ```
 
+### Analyst dashboard
+
+The `dashboard` service (DD-16) is a Streamlit page that reads only through the API with its own key, and puts clusters that need a person at the top (high/critical severity, triage unavailable, or the AI disagreeing with the rule). Create its key and put it in `.env`:
+
+```sh
+docker compose exec api python -m sec450.keys create     # copy the key into .env as DASHBOARD_API_KEY
+docker compose up -d dashboard
+```
+
+It publishes no port. To reach it from a browser, give it its own Cloudflare tunnel (`dashboard-tunnel` profile, `DASHBOARD_TUNNEL_ID` and `secrets/cloudflared-dashboard.json`, set up like the API tunnel above), and protect that hostname with Cloudflare Access first: the dashboard has no login of its own.
+
 ### Pushing reports to a SIEM (Wazuh)
 
 The collector can push every report to a Wazuh manager as it is generated (DD-17). It is off by default; see [docs/siem.md](docs/siem.md) for the Wazuh deployment, the alert rules and secure remote access to the dashboard.
