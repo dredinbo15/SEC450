@@ -127,7 +127,10 @@ services:
     <<: *app
     command: ["python", "-m", "streamlit", "run", "sec450/dashboard/app.py",
               "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true",
-              "--browser.gatherUsageStats=false"]
+              "--browser.gatherUsageStats=false",
+              # The browser's address (the tunnel hostname). Streamlit refuses its websocket,
+              # and the page stays blank, unless the page's origin is allowed here.
+              "--server.corsAllowedOrigins=${DASHBOARD_PUBLIC_ORIGIN:-http://localhost:8501}"]
     env_file: []                          # needs only its own key, not the secrets in .env
     environment:
       HOME: /tmp                          # streamlit writes its settings under $HOME
