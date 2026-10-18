@@ -12,7 +12,7 @@ import streamlit as st
 
 from sec450.config import SEVERITY_ORDER, Config, load_config
 from sec450.dashboard.client import ApiClient, ApiError
-from sec450.dashboard.review import cluster_review_reasons, system_alerts
+from sec450.dashboard.review import cluster_review_reasons, past_gaps, system_alerts
 from sec450.timeutil import Clock, iso
 
 SEVERITY_ICON = {"low": "⚪", "medium": "🟡", "high": "🟠", "critical": "🔴"}
@@ -139,6 +139,11 @@ def main() -> None:
 
         for alert in alerts:
             st.error(alert, icon="🚨")
+        history = past_gaps(clusters["collection_gaps"])
+        if history:
+            with st.expander(f"{len(history)} earlier collection gap(s) in this window (recovered)"):
+                for line in history:
+                    st.caption(line)
         m = st.columns(4)
         m[0].metric("Events", events["count"])
         m[1].metric("Clusters", clusters["count"])

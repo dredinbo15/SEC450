@@ -15,7 +15,7 @@ def cluster_review_reasons(cluster: dict) -> list[str]:
     severity = cluster["severity"]
     if SEVERITY_ORDER[severity] >= SEVERITY_ORDER["high"]:
         reasons.append(f"{severity} severity: confirm and decide on a response")
-    if cluster["state"] == "triage_unavailable":
+    if cluster["state"].upper() == "TRIAGE_UNAVAILABLE":   # the API returns the stored state, upper case
         reasons.append("AI triage unavailable: no advisory assessment")
     ai = cluster.get("ai_assessment")
     if ai and ai.get("recommended_severity") in SEVERITY_ORDER:
@@ -37,9 +37,15 @@ def system_alerts(integrity: dict, gaps: list[dict], events: list[dict]) -> list
     if audit.get("status") == "broken":
         alerts.append(f"Audit log hash chain broken at entry {audit.get('entry_id')}")
     for g in gaps:
-        when = f"since {g['start']}" if g["end"] is None else f"{g['start']} to {g['end']}"
-        alerts.append(f"Collection gap on {g['source']} {when}: {g['reason']}")
+        if g["end"] is None:          # closed gaps are history, listed by past_gaps()
+            alerts.append(f"Collection gap on {g['source']} since {g['start']}: {g['reason']}")
     anomalies = sum(1 for e in events if e.get("clock_anomaly"))
     if anomalies:
         alerts.append(f"{anomalies} event(s) have timestamps ahead of the collector clock")
     return alerts
+
+
+def past_gaps(gaps: list[dict]) -> list[str]:
+    """Closed collection gaps in the window: data from these spans is missing, but collection has recovered."""
+    return [f"{g['source']} was unreadable from {g['start']} to {g['end']}: {g['reason']}"
+            for g in gaps if g["end"] is not None]
