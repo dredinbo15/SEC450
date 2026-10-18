@@ -61,7 +61,7 @@ The collector can push every report to a Wazuh manager as it is generated (DD-17
 
 ### Posting incidents to the incident-management API
 
-With `incidents.enabled: true`, every new high or critical report is sent to `POST /api/v1/incidents` as `{title, log, occurredAt, source}` (DD-18): the summary, the raw log lines, the first event's time and `sec450 <rule> report <id>`. Each report goes out once; the returned incident id is stored in `incident_delivery`. With `backfill: false` the reports that already exist when it is first enabled are not sent.
+With `incidents.enabled: true`, every new report whose severity is in `incidents.severities` is sent to `POST /api/v1/incidents` as `{title, log, occurredAt, source}` (DD-18): the summary, the raw log lines, the first event's time and `sec450 <rule> report <id>`. Each report goes out once; the returned incident id is stored in `incident_delivery`. Medium clusters have no report, so with `medium` in `severities` each finished medium cluster is sent from the cluster instead (`source` is `sec450 <rule> cluster <id>`). With `backfill: false` the reports and clusters that already exist when it is first enabled are not sent.
 
 ## Running the tests and checks
 

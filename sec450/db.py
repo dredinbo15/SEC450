@@ -116,6 +116,14 @@ CREATE TABLE IF NOT EXISTS incident_delivery (
     detail        TEXT,
     handled_at    TEXT NOT NULL
 );
+-- Finished clusters without a report (medium) handled by the same forwarder.
+CREATE TABLE IF NOT EXISTS incident_cluster_delivery (
+    cluster_id    INTEGER PRIMARY KEY REFERENCES cluster(cluster_id) ON DELETE CASCADE,
+    status        TEXT NOT NULL CHECK (status IN ('sent', 'rejected', 'skipped')),
+    incident_id   TEXT,
+    detail        TEXT,
+    handled_at    TEXT NOT NULL
+);
 -- When forwarding was first enabled (one row), so "existing reports" is decided only once.
 CREATE TABLE IF NOT EXISTS incident_forwarding (
     id          INTEGER PRIMARY KEY CHECK (id = 1),

@@ -2,9 +2,10 @@
 import httpx
 import pytest
 
-from sec450.incidents import build_incident, forward_pending_incidents
+from sec450.incidents import build_incident, forward_pending_cluster_incidents, forward_pending_incidents
 from sec450.mock_llm import MockLLMClient
 
+from .conftest import insert_events
 from .test_thin_slice import ATTACKER, _run_pipeline
 
 ALLOWED = {"title", "log", "occurredAt", "source"}   # CreateIncident has additionalProperties: false
@@ -86,3 +87,34 @@ def test_without_backfill_a_fresh_install_still_sends_its_first_report(slice_cfg
     _run_pipeline(slice_cfg, conn, clock, MockLLMClient("ok"))
     slice_cfg.incidents.enabled = True
     assert len(forward_pending_incidents(conn, slice_cfg, clock, post=api)) == 1
+
+
+def _medium_cluster(conn, created_at="2026-10-08T14:05:00.000000Z"):
+    insert_events(conn, [{"ts": f"2026-10-08T14:00:0{i}.000000Z", "target": f"/missing-{i}", "status_code": 404,
+                          "outcome": "failure"} for i in range(3)])
+    cid = conn.execute("INSERT INTO cluster (rule_id, severity, group_key, window_start, window_end, state, "
+                       "created_at) VALUES ('R2', 'medium', '203.0.113.5', '2026-10-08T14:00:00.000000Z', "
+                       "'2026-10-08T14:00:02.000000Z', 'DONE', ?)", (created_at,)).lastrowid
+    conn.execute("INSERT INTO cluster_event (cluster_id, event_id) SELECT ?, event_id FROM event", (cid,))
+    return cid
+
+
+def test_medium_cluster_sent_once_from_the_cluster(cfg, conn, clock):
+    """Mediums have no report (REQ-06), so the incident is built from the finished cluster."""
+    cfg.incidents.enabled = True
+    cfg.incidents.severities = ["medium", "high", "critical"]
+    conn.execute("INSERT INTO incident_forwarding (id, enabled_at) VALUES (1, '2026-10-08T14:00:00Z')")
+    old = _medium_cluster(conn, created_at="2026-10-08T13:00:00.000000Z")   # before forwarding was enabled
+    cid = _medium_cluster(conn)
+    api = FakeApi()
+    assert forward_pending_cluster_incidents(conn, cfg, clock, post=api) == [cid]
+    assert forward_pending_cluster_incidents(conn, cfg, clock, post=api) == []      # once only
+    (incident,) = api.posted
+    assert set(incident) == ALLOWED
+    assert incident["title"].startswith("404 scan (medium): ") and "203.0.113.5" in incident["title"]
+    assert incident["source"] == f"sec450 R2 cluster {cid}" and incident["log"].count("\n") >= 2
+    assert old not in [r[0] for r in conn.execute("SELECT cluster_id FROM incident_cluster_delivery")]
+
+    cfg.incidents.severities = ["high", "critical"]                         # mediums off: nothing more is sent
+    _medium_cluster(conn)
+    assert forward_pending_cluster_incidents(conn, cfg, clock, post=api) == []

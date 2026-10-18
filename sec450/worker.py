@@ -21,7 +21,7 @@ from .config import Config, load_config
 from .db import connect, init_db
 from .detection import run_detection
 from .geoip import GeoIP
-from .incidents import forward_pending_incidents
+from .incidents import forward_pending_cluster_incidents, forward_pending_incidents
 from .logjson import setup_logging
 from .mock_llm import MockLLMClient
 from .reports import generate_pending_reports
@@ -62,6 +62,7 @@ def analysis_cycle(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: 
     generate_pending_reports(conn, cfg, clock)
     forward_pending_reports(conn, cfg, clock)
     forward_pending_incidents(conn, cfg, clock)
+    forward_pending_cluster_incidents(conn, cfg, clock)
 
 
 def analysis_loop(cfg: Config, clock: Clock, stop: threading.Event) -> None:
