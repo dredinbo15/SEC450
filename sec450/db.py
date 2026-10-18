@@ -106,6 +106,22 @@ CREATE TABLE IF NOT EXISTS triage_budget (
 );
 CREATE INDEX IF NOT EXISTS ix_triage_budget_day ON triage_budget(day, outcome);
 
+-- Reports handled by the incident-API forwarder (DD-18): 'sent' (incident_id is the
+-- remote id), 'rejected' (the API refused it; not retried) or 'skipped' (existed before
+-- the forwarder was enabled, or its severity is not forwarded).
+CREATE TABLE IF NOT EXISTS incident_delivery (
+    report_id     INTEGER PRIMARY KEY REFERENCES report(report_id) ON DELETE CASCADE,
+    status        TEXT NOT NULL CHECK (status IN ('sent', 'rejected', 'skipped')),
+    incident_id   TEXT,
+    detail        TEXT,
+    handled_at    TEXT NOT NULL
+);
+-- When forwarding was first enabled (one row), so "existing reports" is decided only once.
+CREATE TABLE IF NOT EXISTS incident_forwarding (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled_at  TEXT NOT NULL
+);
+
 -- Reports already pushed to the SIEM (DD-17). Rows go when retention deletes the report.
 CREATE TABLE IF NOT EXISTS siem_delivery (
     report_id     INTEGER PRIMARY KEY REFERENCES report(report_id) ON DELETE CASCADE,

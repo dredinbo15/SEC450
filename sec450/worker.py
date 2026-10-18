@@ -21,6 +21,7 @@ from .config import Config, load_config
 from .db import connect, init_db
 from .detection import run_detection
 from .geoip import GeoIP
+from .incidents import forward_pending_incidents
 from .logjson import setup_logging
 from .mock_llm import MockLLMClient
 from .reports import generate_pending_reports
@@ -56,10 +57,11 @@ def collection_cycle(collector: Collector, conn: sqlite3.Connection, cfg: Config
 
 def analysis_cycle(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMClient | None) -> None:
     """Triage settled clusters, write reports for finished high/critical ones (REQ-04, REQ-06),
-    then push new reports to the SIEM when one is configured (DD-17)."""
+    then push new reports to the SIEM (DD-17) and the incident API (DD-18) when configured."""
     run_triage(conn, cfg, clock, client)
     generate_pending_reports(conn, cfg, clock)
     forward_pending_reports(conn, cfg, clock)
+    forward_pending_incidents(conn, cfg, clock)
 
 
 def analysis_loop(cfg: Config, clock: Clock, stop: threading.Event) -> None:

@@ -118,3 +118,11 @@ siem:                           # push every report to a SIEM (DD-17); see docs/
   timeout_seconds: 5
   batch_size: 100
   report_url: null              # e.g. https://seclog.redinbo.win/v1/reports/ (the report id is appended)
+
+incidents:                      # post high/critical reports to the incident-management API (DD-18)
+  enabled: false
+  url: https://sec450-incident-api.onrender.com/api/v1/incidents   # POST /incidents (CreateIncident)
+  severities: [high, critical]
+  timeout_seconds: 60           # a sleeping free-tier host can take about a minute to wake
+  batch_size: 20
+  backfill: false               # false: reports that exist when this is first enabled are not sent

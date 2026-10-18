@@ -168,6 +168,16 @@ class SiemConfig(BaseModel):
     report_url: str | None = None   # e.g. https://seclog.redinbo.win/v1/reports/ ; the report id is appended
 
 
+class IncidentsConfig(BaseModel):
+    """Posts high/critical reports to an external incident-management API (DD-18)."""
+    enabled: bool = False
+    url: str = "https://sec450-incident-api.onrender.com/api/v1/incidents"
+    severities: list[Severity] = ["high", "critical"]
+    timeout_seconds: float = Field(60, gt=0)     # a sleeping free-tier host can take ~a minute to wake
+    batch_size: int = Field(20, ge=1)
+    backfill: bool = False                       # False: reports that exist when this is first enabled are not sent
+
+
 class Config(BaseModel):
     database_path: Path = Path("data/sec450.db")
     sources: list[SourceConfig]
@@ -179,6 +189,7 @@ class Config(BaseModel):
     api: ApiConfig = ApiConfig()
     dashboard: DashboardConfig = DashboardConfig()
     siem: SiemConfig = SiemConfig()
+    incidents: IncidentsConfig = IncidentsConfig()
 
     @model_validator(mode="after")
     def _unique_sources(self) -> Config:

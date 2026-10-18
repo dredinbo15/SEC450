@@ -59,6 +59,10 @@ It publishes no port. To reach it from a browser, give it its own Cloudflare tun
 
 The collector can push every report to a Wazuh manager as it is generated (DD-17). It is off by default; see [docs/siem.md](docs/siem.md) for the Wazuh deployment, the alert rules and secure remote access to the dashboard.
 
+### Posting incidents to the incident-management API
+
+With `incidents.enabled: true`, every new high or critical report is sent to `POST /api/v1/incidents` as `{title, log, occurredAt, source}` (DD-18): the summary, the raw log lines, the first event's time and `sec450 <rule> report <id>`. Each report goes out once; the returned incident id is stored in `incident_delivery`. With `backfill: false` the reports that already exist when it is first enabled are not sent.
+
 ## Running the tests and checks
 
 ```sh
@@ -321,3 +325,4 @@ Every requirement has at least one acceptance criterion.
 | DD-15 | Python with FastAPI | Python throughout, FastAPI for the API | Go or Node.js | Go is faster, but the whole team knows Python and FastAPI handles validation almost for free. Database indexing, not language, will decide REQ-10. | REQ-05, REQ-10, REQ-12; maintainability |
 | DD-16 | Dashboard is an API client | The Streamlit dashboard (`python -m streamlit run sec450/dashboard/app.py`) reads only through /v1 with a read-only key and flags clusters that need a person: high/critical severity, triage unavailable, or AI and rule disagreeing | Read SQLite directly from the dashboard | Direct reads would be faster and could show quarantined lines, but would bypass authentication, rate limits and the audit log. Responses are cached per refresh to stay under the rate limit. | REQ-05, REQ-09, DD-10, DD-12, DD-14; security, accountability |
 | DD-17 | Push reports to a SIEM | The collector sends each report to Wazuh as one JSON line over TCP syslog on a private Docker network, and records delivery so an outage only delays alerts | Have the SIEM poll /v1/reports | Polling needs no new code but adds up to a poll interval of delay and another long-lived API key. Pushing is near real-time; the alert carries only triage fields and a link, so raw log lines stay behind the authenticated, audited API. | REQ-06, DD-10, DD-12; timeliness, reliability |
+| DD-18 | Post high/critical reports to the incident-management API | The collector maps each report to the API's CreateIncident shape (title, log, occurredAt, source) and records the result per report; outages are retried, rejections are not | Send the full report JSON | The API rejects extra fields, and its incident workflow (assessment, review, disclosure) needs only the summary and the raw lines; the full report stays behind the audited API, linked by the source field. | REQ-06; interoperability, reliability |

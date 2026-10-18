@@ -1,0 +1,88 @@
+"""DD-18: high/critical reports are posted to the incident API once each, in its exact request shape."""
+import httpx
+import pytest
+
+from sec450.incidents import build_incident, forward_pending_incidents
+from sec450.mock_llm import MockLLMClient
+
+from .test_thin_slice import ATTACKER, _run_pipeline
+
+ALLOWED = {"title", "log", "occurredAt", "source"}   # CreateIncident has additionalProperties: false
+
+
+class FakeApi:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.posted: list[dict] = []
+
+    def __call__(self, cfg, incident):
+        self.posted.append(incident)
+        r = self.responses.pop(0) if self.responses else 201
+        if isinstance(r, Exception):
+            raise r
+        return httpx.Response(r, json={"incidentId": f"inc-{len(self.posted)}"} if r < 300 else {"detail": "bad"})
+
+
+@pytest.fixture
+def inc_cfg(slice_cfg, conn, clock):
+    """One brute-force report, made with forwarding off so the pipeline never does real HTTP."""
+    _run_pipeline(slice_cfg, conn, clock, MockLLMClient("ok"))
+    slice_cfg.incidents.enabled = True
+    slice_cfg.incidents.backfill = True
+    conn.execute("INSERT INTO incident_forwarding (id, enabled_at) VALUES (1, '2026-10-08T13:00:00Z')")
+    return slice_cfg
+
+
+def _deliveries(conn):
+    return [tuple(r) for r in conn.execute("SELECT report_id, status, incident_id FROM incident_delivery")]
+
+
+def test_report_posted_once_in_the_api_shape(inc_cfg, conn, clock):
+    api = FakeApi()
+    rid = conn.execute("SELECT report_id FROM report").fetchone()[0]
+    assert forward_pending_incidents(conn, inc_cfg, clock, post=api) == [rid]
+    assert forward_pending_incidents(conn, inc_cfg, clock, post=api) == []          # not sent twice
+
+    (incident,) = api.posted
+    assert set(incident) == ALLOWED
+    assert 1 <= len(incident["title"]) <= 200 and ATTACKER in incident["title"]
+    assert incident["log"].count("\n") == 5 and "Failed password" in incident["log"]   # 6 raw lines
+    assert incident["occurredAt"].startswith("2026-10-08T14:00") and incident["occurredAt"].endswith("Z")
+    assert incident["source"] == f"sec450 R1 report {rid}"
+    assert _deliveries(conn) == [(rid, "sent", "inc-1")]
+
+
+def test_outage_retries_and_rejection_does_not(inc_cfg, conn, clock):
+    rid = conn.execute("SELECT report_id FROM report").fetchone()[0]
+    assert forward_pending_incidents(conn, inc_cfg, clock, post=FakeApi(httpx.ConnectTimeout("asleep"))) == []
+    assert forward_pending_incidents(conn, inc_cfg, clock, post=FakeApi(503)) == []
+    assert _deliveries(conn) == []                                              # still pending
+    assert forward_pending_incidents(conn, inc_cfg, clock, post=FakeApi(422)) == []
+    assert _deliveries(conn) == [(rid, "rejected", None)]                       # refused once, not retried
+    assert forward_pending_incidents(conn, inc_cfg, clock, post=FakeApi()) == []
+
+
+def test_without_backfill_existing_reports_are_not_sent(slice_cfg, conn, clock):
+    _run_pipeline(slice_cfg, conn, clock, MockLLMClient("ok"))   # forwarding still off: report already exists
+    slice_cfg.incidents.enabled = True
+    api = FakeApi()
+    assert forward_pending_incidents(conn, slice_cfg, clock, post=api) == []
+    assert api.posted == [] and [s for _, s, _ in _deliveries(conn)] == ["skipped"]
+
+
+def test_severity_filter_and_title_limit():
+    body = {"summary": "x" * 300, "matched_rule": {"id": "R4", "severity": "critical"},
+            "timeline": [{"ts": "2026-10-17T18:03:13.000000Z"}], "raw_lines": [{"text": "a"}, {"text": "b"}]}
+    inc = build_incident(9, body)
+    assert len(inc["title"]) == 200 and inc["log"] == "a\nb" and inc["source"] == "sec450 R4 report 9"
+
+
+def test_without_backfill_a_fresh_install_still_sends_its_first_report(slice_cfg, conn, clock):
+    """Enabled before any report exists: the first real report must go out, not be skipped as 'existing'."""
+    slice_cfg.incidents.enabled = True
+    api = FakeApi()
+    assert forward_pending_incidents(conn, slice_cfg, clock, post=api) == []   # no reports yet
+    slice_cfg.incidents.enabled = False                                      # keep the pipeline offline
+    _run_pipeline(slice_cfg, conn, clock, MockLLMClient("ok"))
+    slice_cfg.incidents.enabled = True
+    assert len(forward_pending_incidents(conn, slice_cfg, clock, post=api)) == 1
