@@ -55,6 +55,19 @@ docker compose up -d dashboard
 
 It publishes no port. To reach it from a browser, give it its own Cloudflare tunnel (`dashboard-tunnel` profile, `DASHBOARD_TUNNEL_ID` and `secrets/cloudflared-dashboard.json`, set up like the API tunnel above), and protect that hostname with Cloudflare Access first: the dashboard has no login of its own.
 
+To pull from another machine, create a key on the stack host (`docker compose exec api python -m sec450.keys create`) and run the dashboard on the other machine against the API tunnel. That machine needs no Docker, only the venv and a `config.yaml` with:
+
+```yaml
+dashboard:
+  api_url: https://seclog.redinbo.win
+  ca_cert: null                 # Cloudflare's certificate is publicly trusted
+```
+
+```sh
+export SEC450_API_KEY=<key>      # PowerShell: $env:SEC450_API_KEY = "<key>"
+python -m streamlit run sec450/dashboard/app.py
+```
+
 ### Pushing reports to a SIEM (Wazuh)
 
 The collector can push every report to a Wazuh manager as it is generated (DD-17). It is off by default; see [docs/siem.md](docs/siem.md) for the Wazuh deployment, the alert rules and secure remote access to the dashboard.
