@@ -26,6 +26,7 @@ from ..timeutil import Clock, iso
 from .audit import write_audit
 from .query import QueryError, parse_query, query_clusters, query_events, query_reports
 from .ratelimit import RateLimiter
+from .testing import install as install_testing_interface
 
 log = logging.getLogger(__name__)
 
@@ -154,4 +155,5 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
         request.state.result_count = 1
         return {"batches": hashchain.verify_batches(conn), "audit": hashchain.verify_audit(conn)}
 
+    install_testing_interface(app, cfg)
     return app

@@ -76,6 +76,10 @@ The collector can push every report to a Wazuh manager as it is generated (DD-17
 
 With `incidents.enabled: true`, every new report whose severity is in `incidents.severities` is sent to `POST /api/v1/incidents` as `{title, log, occurredAt, source}` (DD-18): the summary, the raw log lines, the first event's time and `sec450 <rule> report <id>`. Each report goes out once; the returned incident id is stored in `incident_delivery`. Medium clusters have no report, so with `medium` in `severities` each finished medium cluster is sent from the cluster instead (`source` is `sec450 <rule> cluster <id>`). With `backfill: false` the reports and clusters that already exist when it is first enabled are not sent.
 
+### Course testing interface
+
+The `api` container also serves the course's `/test` endpoints: the system at `https://seclog.redinbo.win` and the tester at `https://seclog.redinbo.win/tester`. Neither needs credentials. See [docs/testing-interface.md](docs/testing-interface.md) for the endpoints, the suite and how to check it like the graders do.
+
 ## Running the tests and checks
 
 ```sh
