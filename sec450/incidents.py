@@ -6,15 +6,15 @@ finished (DONE). The API takes exactly {title, log, occurredAt, source} and
 rejects extra fields, so each one is mapped into that shape:
 
   title       the summary line, cut to 200 characters
-  log         the raw log lines, one per line, unmodified
+  log         the raw log lines, one per line, with credentials redacted (redact.py)
   occurredAt  the first event's time (UTC)
   source      "sec450 <rule id> report <id>" or "sec450 <rule id> cluster <id>"
 
 Each report or cluster is handled once. A 2xx response records the returned incident id; a
 4xx means the API refused that report and it is recorded as 'rejected' (sending it
-again would fail the same way). A network error, timeout or 5xx stops the cycle,
-and the report is retried on a later one, so an outage delays incidents instead of
-losing them.
+again would fail the same way). A network error, timeout, 5xx, 408 or 429 stops the
+cycle, and the report is retried on a later one, so an outage or rate limit delays
+incidents instead of losing them.
 """
 from __future__ import annotations
 
@@ -27,9 +27,13 @@ import httpx
 
 from .config import Config, IncidentsConfig
 from .db import transaction
+from .redact import redact_text
 from .timeutil import Clock, iso
 
 log = logging.getLogger(__name__)
+
+# Client errors that say "not now" rather than "never": request timeout and rate limit.
+RETRYABLE_4XX = (408, 429)
 
 Poster = Callable[[IncidentsConfig, dict], httpx.Response]
 
@@ -39,7 +43,8 @@ def build_incident(report_id: int, body: dict) -> dict:
     timeline = body.get("timeline", [])
     return {
         "title": (body.get("summary") or f"SEC450 report {report_id}")[:200],
-        "log": "\n".join(line["text"] for line in body.get("raw_lines", [])) or body.get("summary", ""),
+        # Redacted like an LLM payload (REQ-04): the full lines stay behind the audited API.
+        "log": "\n".join(redact_text(line["text"]) for line in body.get("raw_lines", [])) or body.get("summary", ""),
         "occurredAt": timeline[0]["ts"] if timeline else body.get("generated_at"),
         "source": f"sec450 {rule.get('id', '?')} report {report_id}"[:100],
     }
@@ -59,7 +64,7 @@ def build_cluster_incident(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: 
                f"{cluster['group_key']} between {cluster['window_start']} and {cluster['window_end']}")
     return {
         "title": summary[:200],
-        "log": "\n".join(r["text"] for r in rows) or summary,
+        "log": "\n".join(redact_text(r["text"]) for r in rows) or summary,
         "occurredAt": rows[0]["ts"] if rows else cluster["window_start"],
         "source": f"sec450 {cluster['rule_id']} cluster {cluster['cluster_id']}"[:100],
     }
@@ -85,7 +90,7 @@ def _deliver(conn: sqlite3.Connection, icfg: IncidentsConfig, kind: str, key: in
     except httpx.HTTPError as exc:
         log.warning("incident API unreachable, will retry: %s", exc, extra=extra)
         return "retry"
-    if resp.status_code >= 500:
+    if resp.status_code >= 500 or resp.status_code in RETRYABLE_4XX:
         log.warning("incident API returned %d, will retry", resp.status_code, extra=extra)
         return "retry"
     if resp.status_code >= 400:

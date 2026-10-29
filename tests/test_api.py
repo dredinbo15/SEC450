@@ -78,3 +78,29 @@ def test_audit_chain_and_fail_closed(api, conn):  # AC-26
     conn.execute("CREATE TRIGGER block_audit BEFORE INSERT ON audit_entry BEGIN SELECT RAISE(ABORT, 'no'); END")
     r = client.get("/v1/events")
     assert r.status_code == 500 and "events" not in r.json()
+
+
+def test_unauthenticated_requests_are_limited_and_summarized(cfg, conn, clock):  # REQ-09
+    """Keyless requests get their own per-address limit; refusals become one audit entry per window."""
+    from sec450.api.app import create_app
+    cfg.api.unauthenticated_rate_limit_per_minute = 3
+    client = TestClient(create_app(cfg, clock))
+    r = None
+    statuses = []
+    for _ in range(6):
+        r = client.get("/v1/events")
+        statuses.append(r.status_code)
+    assert statuses == [401, 401, 401, 429, 429, 429]
+    assert r is not None and int(r.headers["Retry-After"]) >= 1 and "events" not in r.json()
+    rows = conn.execute("SELECT status_code, params_json FROM audit_entry ORDER BY entry_id").fetchall()
+    assert [row[0] for row in rows] == [401, 401, 401, 429]       # the first refusal is written at once
+    assert '"refused_requests": 1' in rows[3][1]
+
+    clock.advance(61)
+    assert [client.get("/v1/events").status_code for _ in range(4)] == [401, 401, 401, 429]
+    last = conn.execute("SELECT params_json FROM audit_entry ORDER BY entry_id DESC").fetchone()[0]
+    assert '"refused_requests": 3' in last                         # the two held back, plus this one
+    assert verify_audit(conn)["status"] == "intact"
+
+    _, key = create_key(conn, clock)                               # a valid key is never in this bucket
+    assert client.get("/v1/events", headers={"Authorization": f"Bearer {key}"}).status_code == 200

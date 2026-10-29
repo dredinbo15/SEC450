@@ -34,9 +34,12 @@ Run one session at a time. Expected times: tester setup under 30 s, tester run u
 - **`POST /test/setup`** with `{"target_url": "<system base URL>"}`
   - Creates a UUID session and calls the target's `/test/setup` with `{"session_id", "setup": {}}`.
   - Returns `201 {"session_id"}` only after the target confirms the same ID. Otherwise it returns the target's status, message and source.
-  - Targets must be public `https://` hosts; internal and private addresses are refused with `400`.
+  - Targets must be public `https://` hosts; internal and private addresses are refused with `400`. The address is checked again on every connection, so a hostname that later resolves inward fails as a `communication` error.
+  - At most 10 sessions are set up per minute (`429` with `Retry-After` after that).
 - **`POST /test/run`** with `{"session_id": ...}`
   - Runs the suite once and returns the report. A second run gets `409`; an unknown ID gets `404`.
+  - At most 2 setups or runs proceed at once; others get `503` with `Retry-After`, and the session stays ready to run.
+  - A run has a 120 s time budget. Checks still pending when it is used up are reported as `skip`.
 - **`GET /test/report?session_id=...`**
   - Returns the stored report (identical to the run response), or `409` before the run has finished.
 

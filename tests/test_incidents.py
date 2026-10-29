@@ -118,3 +118,19 @@ def test_medium_cluster_sent_once_from_the_cluster(cfg, conn, clock):
     cfg.incidents.severities = ["high", "critical"]                         # mediums off: nothing more is sent
     _medium_cluster(conn)
     assert forward_pending_cluster_incidents(conn, cfg, clock, post=api) == []
+
+
+def test_incident_log_lines_are_redacted():
+    """The incident API is outside the system: credentials are removed as for the LLM (REQ-04)."""
+    body = {"summary": "s", "matched_rule": {"id": "R3", "severity": "high"}, "timeline": [],
+            "raw_lines": [{"text": "GET /login?user=bob&password=hunter2 Authorization: Bearer abc.def"}]}
+    log = build_incident(1, body)["log"]
+    assert "hunter2" not in log and "abc.def" not in log and "[REDACTED]" in log and "user=bob" in log
+
+
+@pytest.mark.parametrize("status", [408, 429])
+def test_timeouts_and_rate_limits_are_retried(inc_cfg, conn, clock, status):
+    """408 and 429 mean "not now": the report stays pending instead of being recorded as rejected."""
+    assert forward_pending_incidents(conn, inc_cfg, clock, post=FakeApi(status)) == []
+    assert _deliveries(conn) == []
+    assert len(forward_pending_incidents(conn, inc_cfg, clock, post=FakeApi())) == 1

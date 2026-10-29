@@ -99,6 +99,7 @@ api:
   tls_cert: /certs/server.crt   # created self-signed on first start if missing
   tls_key: /certs/server.key
   rate_limit_per_minute: 60
+  unauthenticated_rate_limit_per_minute: 30   # per client address; refused requests are summarized in the audit log
   max_span_days: 31
   default_span_hours: 24
   default_limit: 100

@@ -25,7 +25,7 @@ from ..keys import lookup_key
 from ..timeutil import Clock, iso
 from .audit import write_audit
 from .query import QueryError, parse_query, query_clusters, query_events, query_reports
-from .ratelimit import RateLimiter
+from .ratelimit import RateLimiter, RefusedRequests
 from .testing import install as install_testing_interface
 
 log = logging.getLogger(__name__)
@@ -34,6 +34,8 @@ log = logging.getLogger(__name__)
 def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
     clock = clock or Clock()
     limiter = RateLimiter(cfg.api.rate_limit_per_minute, clock)
+    anon_limiter = RateLimiter(cfg.api.unauthenticated_rate_limit_per_minute, clock)
+    refused = RefusedRequests(clock)
     init_db(connect(cfg.database_path))
 
     app = FastAPI(title="SEC450 log analysis API", docs_url=None, redoc_url=None, openapi_url=None)
@@ -64,6 +66,14 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
         finally:
             conn.close()
 
+    def _audit_refused(request: Request, address: str, count: int) -> None:
+        conn = connect(cfg.database_path)
+        try:
+            write_audit(conn, iso(clock.now()), None, request.method, "/v1/* (unauthenticated, rate limited)",
+                        {"client": address, "refused_requests": count}, 429, 0)
+        finally:
+            conn.close()
+
     @app.middleware("http")
     async def security(request: Request, call_next):
         if not request.url.path.startswith("/v1/"):
@@ -84,6 +94,18 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
         """Checks run in order: API key -> rate limit -> handler (validation, query) -> audit."""
         key_id = await run_in_threadpool(_authenticate, request)
         request.state.key_id = key_id   # the key's id only; the key itself is never stored or logged
+        address = request.client.host if request.client else "unknown"
+        if key_id is None and (retry_after := anon_limiter.check(address)) is not None:
+            # Keyless requests have no key bucket; this one is per address, and refusals are
+            # summarized in the audit log rather than written one by one (RefusedRequests).
+            count = refused.add(address)
+            if count is not None:
+                try:
+                    await run_in_threadpool(_audit_refused, request, address, count)
+                except Exception:
+                    log.exception("audit write failed for refused unauthenticated requests")
+            return JSONResponse({"error": "too many requests without a valid API key"}, status_code=429,
+                                headers={"Retry-After": str(retry_after)})
         if key_id is None:
             response = JSONResponse({"error": "missing, invalid or revoked API key"}, status_code=401,
                                     headers={"WWW-Authenticate": "Bearer"})

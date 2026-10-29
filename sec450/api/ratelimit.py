@@ -32,3 +32,33 @@ class RateLimiter:
                 return max(1, math.ceil(hits[0] + WINDOW_SECONDS - now))
             hits.append(now)
             return None
+
+
+class RefusedRequests:
+    """Counts requests the unauthenticated rate limit refused, per client address.
+
+    Writing an audit entry for each one would let a flood of keyless requests queue writes on
+    the database the collector shares, so the audit log gets one summary entry per address:
+    at the first refusal, then at most once per window, each counting the refusals since the last.
+    """
+
+    MAX_TRACKED = 10_000
+
+    def __init__(self, clock: Clock):
+        self.clock = clock
+        self._pending: dict[str, tuple[int, float]] = {}   # address -> (refused since last entry, last entry)
+        self._lock = threading.Lock()
+
+    def add(self, address: str) -> int | None:
+        """Count one refusal; returns the count to write to the audit log now, or None."""
+        now = self.clock.now().timestamp()
+        with self._lock:
+            count, last = self._pending.get(address, (0, -math.inf))
+            count += 1
+            if now - last >= WINDOW_SECONDS:
+                if len(self._pending) >= self.MAX_TRACKED:
+                    self._pending = {a: v for a, v in self._pending.items() if now - v[1] < WINDOW_SECONDS}
+                self._pending[address] = (0, now)
+                return count
+            self._pending[address] = (count, last)
+            return None

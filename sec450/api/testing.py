@@ -20,15 +20,18 @@ import logging
 import socket
 import ssl
 import threading
+import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 
+import certifi
+import httpcore
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -37,6 +40,8 @@ from starlette.concurrency import run_in_threadpool
 from ..config import Config
 from ..db import connect
 from ..keys import create_key, revoke_key
+from ..timeutil import Clock
+from .ratelimit import RateLimiter
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +53,12 @@ REPORT_FIELDS = ("summary", "matched_rule", "requester", "data_destination", "ti
                  "ai_assessment", "raw_lines", "integrity")       # REQ-06
 MAX_SESSIONS = 500                # oldest sessions are forgotten past this (memory bound)
 REQUEST_TIMEOUT = 20.0
+# These endpoints need no credentials and share the API's worker threads, so their cost is
+# bounded: at most this many setups or runs at once, a time budget per run (checks still
+# pending are skipped), and a limit on setups (each of which can lead to one run).
+MAX_CONCURRENT = 2
+RUN_BUDGET_SECONDS = 120.0
+SETUPS_PER_MINUTE = 10
 SOURCES = ("tester", "system", "communication", "unknown")
 
 ClientFactory = Callable[[str, bool], httpx.Client]   # (target_url, target_is_this_deployment)
@@ -57,6 +68,12 @@ TlsProbe = Callable[[], list[tuple[str, str, str]]]   # [(test_id, outcome, mess
 
 def problem(status: int, message: str, source: str) -> JSONResponse:
     return JSONResponse({"message": message, "source": source}, status_code=status)
+
+
+def busy(status: int, message: str, retry_after: int) -> JSONResponse:
+    response = problem(status, message, "tester")
+    response.headers["Retry-After"] = str(retry_after)
+    return response
 
 
 async def _json_object(request: Request) -> dict[str, Any] | None:
@@ -84,6 +101,8 @@ class Registry:
     system: OrderedDict[str, str] = field(default_factory=OrderedDict)          # session_id -> created
     tester: OrderedDict[str, TesterSession] = field(default_factory=OrderedDict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    slots: threading.BoundedSemaphore = field(default_factory=lambda: threading.BoundedSemaphore(MAX_CONCURRENT))
+    setups: RateLimiter = field(default_factory=lambda: RateLimiter(SETUPS_PER_MINUTE, Clock()))
 
     @staticmethod
     def trim(d: OrderedDict) -> None:
@@ -91,21 +110,63 @@ class Registry:
             d.popitem(last=False)
 
 
+class NotPublicError(Exception):
+    pass
+
+
+def public_address(host: str, port: int) -> str:
+    """An address for host, provided every address it resolves to is public; else NotPublicError."""
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except OSError:
+        raise NotPublicError(f"cannot resolve {host}") from None
+    addresses = [str(info[4][0]) for info in infos]
+    # A scoped IPv6 address ("fe80::1%eth0") is link-local, so never public.
+    if not addresses or not all(ipaddress.ip_address(a.split("%")[0]).is_global for a in addresses):
+        raise NotPublicError(f"{host} must resolve to public addresses only")
+    return addresses[0]
+
+
 def public_target_guard(target_url: str) -> str | None:
-    """Refuse targets that are not public HTTPS hosts, so the tester can't be aimed inward (SSRF)."""
+    """Refuse targets that are not public HTTPS hosts, so the tester can't be aimed inward (SSRF).
+
+    This gives a clear error at setup. The connection itself is checked again by
+    PublicOnlyBackend, since a hostname can resolve differently a moment later.
+    """
     parts = urlsplit(target_url)
     if parts.scheme != "https" or not parts.hostname:
         return "target_url must be an https:// URL"
     if parts.username or parts.password or parts.query or parts.fragment:
         return "target_url must not contain credentials, a query or a fragment"
     try:
-        infos = socket.getaddrinfo(parts.hostname, parts.port or 443, proto=socket.IPPROTO_TCP)
-    except OSError:
-        return f"cannot resolve {parts.hostname}"
-    for info in infos:
-        if not ipaddress.ip_address(info[4][0]).is_global:
-            return "target_url must resolve to public addresses"
+        public_address(parts.hostname, parts.port or 443)
+    except NotPublicError as exc:
+        return str(exc)
     return None
+
+
+class PublicOnlyBackend(httpcore.SyncBackend):
+    """Resolves the host once per connection, refuses non-public addresses and connects to the
+    address it checked, so DNS rebinding can't swap in an internal one after the check.
+    TLS still verifies the certificate against the hostname (httpcore sends it as SNI)."""
+
+    def connect_tcp(self, host: str, port: int, timeout: float | None = None,
+                    local_address: str | None = None,
+                    socket_options: Iterable[Any] | None = None) -> httpcore.NetworkStream:
+        try:
+            address = public_address(host, port)
+        except NotPublicError as exc:
+            raise httpcore.ConnectError(str(exc)) from None
+        return super().connect_tcp(address, port, timeout, local_address, socket_options)
+
+
+class PublicOnlyTransport(httpx.HTTPTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        # httpx has no public option for the network backend, so its pool is replaced by one
+        # built the same way (certifi's CAs, as httpx uses by default) with PublicOnlyBackend.
+        self._pool = httpcore.ConnectionPool(ssl_context=ssl.create_default_context(cafile=certifi.where()),
+                                             network_backend=PublicOnlyBackend())
 
 
 def default_client_factory(cfg: Config) -> ClientFactory:
@@ -116,7 +177,9 @@ def default_client_factory(cfg: Config) -> ClientFactory:
             ctx = ssl.create_default_context(cafile=str(cfg.api.tls_cert))
             return httpx.Client(base_url=f"https://localhost:{cfg.api.port}", verify=ctx,
                                 timeout=REQUEST_TIMEOUT, trust_env=False)
-        return httpx.Client(base_url=target_url, timeout=REQUEST_TIMEOUT)
+        # trust_env=False: a proxy from the environment would be an internal hop the check can't see.
+        return httpx.Client(base_url=target_url, timeout=REQUEST_TIMEOUT, transport=PublicOnlyTransport(),
+                            trust_env=False)
     return make
 
 
@@ -155,8 +218,10 @@ class Suite:
     """One run of the checks against a target system base URL."""
 
     def __init__(self, http: httpx.Client, session_id: str, key: str | None,
-                 tls_probe: TlsProbe | None, now: datetime) -> None:
+                 tls_probe: TlsProbe | None, now: datetime, budget_seconds: float = RUN_BUDGET_SECONDS) -> None:
         self.http, self.session_id, self.key, self.tls_probe, self.now = http, session_id, key, tls_probe, now
+        self.budget_seconds = budget_seconds
+        self.deadline = time.monotonic() + budget_seconds
         self.results: list[dict[str, Any]] = []
         self.ops: set[str] = {"POST /test/setup"}   # the target's setup confirmed this session
         self.acs: set[str] = set()
@@ -183,7 +248,9 @@ class Suite:
     def check(self, test_id: str, ops: tuple[str, ...], acs: tuple[str, ...],
               fn: Callable[[], tuple[str, str]], needs_key: bool = False) -> None:
         source = None
-        if needs_key and not self.key:
+        if time.monotonic() > self.deadline:
+            outcome, message = "skip", f"the run's time budget of {self.budget_seconds:g} s was used up"
+        elif needs_key and not self.key:
             outcome, message = "skip", "the tester holds no API key for this target"
         else:
             try:
@@ -421,6 +488,7 @@ def install(app: FastAPI, cfg: Config) -> None:
     app.state.tester_target_guard = public_target_guard
     app.state.tester_tls_probe = default_tls_probe(cfg)
     app.state.tester_now = lambda: datetime.now(UTC)
+    app.state.tester_run_budget = RUN_BUDGET_SECONDS
 
     endpoints = {"system": ["POST /test/setup", "GET /test/report"],
                  "tester": ["POST /tester/test/setup", "POST /tester/test/run", "GET /tester/test/report"],
@@ -475,6 +543,10 @@ def install(app: FastAPI, cfg: Config) -> None:
             refused = await run_in_threadpool(app.state.tester_target_guard, target)
             if refused:
                 return problem(400, refused, "tester")
+        if (retry_after := reg.setups.check("tester")) is not None:
+            return busy(429, f"at most {SETUPS_PER_MINUTE} tester sessions are set up per minute", retry_after)
+        if not reg.slots.acquire(blocking=False):
+            return busy(503, "the tester is busy with other sessions; try again shortly", 30)
         sid = str(uuid.uuid4())
         try:
             with app.state.tester_client_factory(target, is_self) as http:
@@ -483,6 +555,8 @@ def install(app: FastAPI, cfg: Config) -> None:
             return problem(504, "target /test/setup timed out", "communication")
         except httpx.TransportError as exc:
             return problem(502, f"cannot reach target: {exc}", "communication")
+        finally:
+            reg.slots.release()
         try:
             confirmed = r.status_code == 201 and r.json().get("session_id") == sid
         except ValueError:
@@ -513,6 +587,8 @@ def install(app: FastAPI, cfg: Config) -> None:
                 return problem(404, "unknown session_id", "tester")
             if session.state != "ready":
                 return problem(409, f"session already {session.state}; each session runs once", "tester")
+            if not reg.slots.acquire(blocking=False):
+                return busy(503, "the tester is busy with other runs; try again shortly", 30)
             session.state = "running"
         try:
             report = await run_in_threadpool(_run_suite, app, cfg, sid, session)
@@ -524,6 +600,8 @@ def install(app: FastAPI, cfg: Config) -> None:
                              for m in ("code", "component", "system")}}
             session.state = "done"
             return problem(500, "tester aborted; the stored report is available", "tester")
+        finally:
+            reg.slots.release()
         session.report, session.state = report, "done"
         return JSONResponse(report)
 
@@ -553,7 +631,7 @@ def _run_suite(app: FastAPI, cfg: Config, sid: str, session: TesterSession) -> d
     try:
         with app.state.tester_client_factory(session.target_url, session.is_self) as http:
             suite = Suite(http, sid, key, app.state.tester_tls_probe if session.is_self else None,
-                          app.state.tester_now())
+                          app.state.tester_now(), app.state.tester_run_budget)
             suite.run()
             return suite.report(session.target_url)
     finally:

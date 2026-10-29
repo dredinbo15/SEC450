@@ -7,6 +7,7 @@ become REPORTED (in the same transaction as the report), medium become DONE.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import sqlite3
@@ -29,10 +30,28 @@ def overlapping_gaps(conn: sqlite3.Connection, start: str, end: str) -> list[dic
     return [dict(r) for r in rows]
 
 
+def raw_line(e: sqlite3.Row) -> dict:
+    line = {"raw_id": e["raw_id"], "batch_id": e["batch_id"], "source": e["source"], "text": e["raw_text"]}
+    if e["raw_bytes"] is not None:   # not valid UTF-8: text is a lossy decode, these are the bytes as read
+        line["bytes_base64"] = base64.b64encode(e["raw_bytes"]).decode("ascii")
+    return line
+
+
+def integrity(conn: sqlite3.Connection, batch_ids: set[int]) -> dict:
+    """The chain's links end to end, and the content of this report's own batches (REQ-06, REQ-08).
+
+    Re-hashing every stored line for every report would grow with the whole database, and a
+    tampered batch unrelated to this cluster would mark the report broken.
+    """
+    result = hashchain.verify_batches(conn, content_ids=batch_ids)
+    result["scope"] = f"chain links of all batches; line content of this report's {len(batch_ids)} batches"
+    return result
+
+
 def build_report(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) -> dict:
     rule = next((r for r in cfg.detection.rules if r.id == cluster["rule_id"]), None)
     events = conn.execute(
-        "SELECT e.*, r.text AS raw_text, r.batch_id FROM event e "
+        "SELECT e.*, r.text AS raw_text, r.raw_bytes, r.batch_id FROM event e "
         "JOIN cluster_event ce USING (event_id) JOIN raw_line r USING (raw_id) "
         "WHERE ce.cluster_id = ? ORDER BY e.ts, e.event_id", (cluster["cluster_id"],)).fetchall()
 
@@ -81,9 +100,8 @@ def build_report(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) ->
             for e in events
         ],
         "ai_assessment": ai,
-        "raw_lines": [{"raw_id": e["raw_id"], "batch_id": e["batch_id"], "source": e["source"],
-                       "text": e["raw_text"]} for e in events],
-        "integrity": hashchain.verify_batches(conn),
+        "raw_lines": [raw_line(e) for e in events],
+        "integrity": integrity(conn, {e["batch_id"] for e in events}),
         "collection_gaps": overlapping_gaps(conn, cluster["window_start"], cluster["window_end"]),
     }
 

@@ -29,25 +29,33 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class ReadResult:
-    lines: list[str]
+    lines: list[bytes]   # as read, without the line ending
     inode: int
     offset: int
 
 
-def _read_from(path: Path, offset: int, include_partial: bool = False) -> tuple[list[str], int]:
+def _read_from(path: Path, offset: int, include_partial: bool = False) -> tuple[list[bytes], int]:
     with path.open("rb") as fh:
         fh.seek(offset)
         data = fh.read()
     end = len(data) if include_partial else data.rfind(b"\n") + 1
     chunk = data[:end]
-    lines = [ln.rstrip(b"\r").decode("utf-8", errors="replace") for ln in chunk.split(b"\n")]
+    lines = [ln.rstrip(b"\r") for ln in chunk.split(b"\n")]
     return [ln for ln in lines if ln], offset + end
+
+
+def decode_line(raw: bytes) -> tuple[str, bytes | None]:
+    """The line as text, plus the original bytes when the text had to be a lossy decode (REQ-08)."""
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace"), raw
 
 
 def read_new_lines(path: Path, inode: int | None, offset: int) -> ReadResult:
     """Read complete lines appended since (inode, offset), following one rotation (file -> file.1)."""
     st = os.stat(path)
-    lines: list[str] = []
+    lines: list[bytes] = []
     if inode is not None and st.st_ino != inode:
         rotated = path.with_name(path.name + ".1")
         if rotated.exists() and os.stat(rotated).st_ino == inode:
@@ -117,13 +125,16 @@ class Collector:
             max_id = c.execute("SELECT COALESCE(MAX(batch_id), 0) FROM batch").fetchone()[0]
             batch_id = max(max_id + 1, first_id or 1)
             prev = hashchain.last_hash(c, "batch")
-            digest = hashchain.batch_hash(prev, source.name, collected_at, result.lines)
+            # The hash covers the bytes as read, so a lossy decode can't hide a change (REQ-08).
+            lines_hash = hashchain.lines_digest(result.lines)
+            digest = hashchain.chain_hash(prev, source.name, collected_at, lines_hash)
             c.execute(
-                "INSERT INTO batch (batch_id, source, collected_at, line_count, prev_hash, hash) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (batch_id, source.name, collected_at, len(result.lines), prev, digest),
+                "INSERT INTO batch (batch_id, source, collected_at, line_count, prev_hash, hash, lines_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (batch_id, source.name, collected_at, len(result.lines), prev, digest, lines_hash),
             )
-            for seq, text in enumerate(result.lines):
+            for seq, raw in enumerate(result.lines):
+                text, raw_bytes = decode_line(raw)
                 reason: str | None  # None = stored as an event; text = quarantine reason
                 try:
                     ev = parse(text, ctx)
@@ -134,13 +145,13 @@ class Collector:
                                   extra={"batch_id": batch_id, "source": source.name})
                     reason = f"parser error: {type(exc).__name__}: {exc}"
                 else:
-                    reason = self._insert_event(c, source, batch_id, seq, text, ev, now + skew)
+                    reason = self._insert_event(c, source, batch_id, seq, text, raw_bytes, ev, now + skew)
                     if reason is None:
                         continue
                 quarantined += 1
                 c.execute(
-                    "INSERT INTO raw_line (batch_id, seq, text, status, quarantine_reason) "
-                    "VALUES (?, ?, ?, 'quarantined', ?)", (batch_id, seq, text, reason))
+                    "INSERT INTO raw_line (batch_id, seq, text, status, quarantine_reason, raw_bytes) "
+                    "VALUES (?, ?, ?, 'quarantined', ?, ?)", (batch_id, seq, text, reason, raw_bytes))
             self._save_cursor(source.name, result.inode, result.offset)
 
         ctx_fields = {"batch_id": batch_id, "source": source.name}
@@ -153,7 +164,7 @@ class Collector:
         return batch_id
 
     def _insert_event(self, c: sqlite3.Connection, source: SourceConfig, batch_id: int, seq: int,
-                      text: str, ev: ParsedEvent, anomaly_after: datetime) -> str | None:
+                      text: str, raw_bytes: bytes | None, ev: ParsedEvent, anomaly_after: datetime) -> str | None:
         """Store a parsed line and its event; returns a quarantine reason if the event is unstorable.
 
         Runs in a savepoint so a bad value (e.g. an integer too large for SQLite) undoes only
@@ -162,8 +173,8 @@ class Collector:
         c.execute("SAVEPOINT line")
         try:
             raw_id = c.execute(
-                "INSERT INTO raw_line (batch_id, seq, text, status) VALUES (?, ?, ?, 'parsed')",
-                (batch_id, seq, text)).lastrowid
+                "INSERT INTO raw_line (batch_id, seq, text, status, raw_bytes) VALUES (?, ?, ?, 'parsed', ?)",
+                (batch_id, seq, text, raw_bytes)).lastrowid
             asn, country = self.geoip.lookup(ev.client_ip)
             c.execute(
                 "INSERT INTO event (raw_id, ts, source, host, client_ip, username, api_key_id, asn, "

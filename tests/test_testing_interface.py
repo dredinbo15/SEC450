@@ -189,3 +189,43 @@ def test_server_errors_are_reported_as_system_errors(app, client):
     report = client.post("/tester/test/run", json={"session_id": sid}).json()
     row = next(r for r in report["results"] if r["test_id"] == "integrity-chains")
     assert (row["outcome"], row["source"]) == ("error", "system")
+
+
+def test_internal_addresses_are_refused_when_connecting():
+    """Checked at connect time too, not only at setup, so DNS rebinding can't reach inside (SSRF)."""
+    import httpx
+
+    from sec450.api.testing import PublicOnlyTransport
+    with httpx.Client(transport=PublicOnlyTransport()) as http:
+        for url in ("https://127.0.0.1:8443/health", "https://localhost/", "https://10.0.0.5/"):
+            with pytest.raises(httpx.ConnectError, match="public"):
+                http.get(url)
+
+
+def test_tester_capacity_is_bounded(app, client):
+    from sec450.api.testing import MAX_CONCURRENT
+    reg = app.state.testing_registry
+    sid = client.post("/tester/test/setup", json={"target_url": TARGET}).json()["session_id"]
+    held = [reg.slots.acquire(blocking=False) for _ in range(MAX_CONCURRENT)]   # as if other runs were going
+    assert all(held)
+    r = client.post("/tester/test/run", json={"session_id": sid})
+    assert r.status_code == 503 and r.headers["Retry-After"] and r.json()["source"] == "tester"
+    assert client.post("/tester/test/setup", json={"target_url": TARGET}).status_code == 503
+    for _ in held:
+        reg.slots.release()
+    assert client.post("/tester/test/run", json={"session_id": sid}).status_code == 200   # the refusal kept it ready
+
+
+def test_tester_setups_are_rate_limited(client):
+    from sec450.api.testing import SETUPS_PER_MINUTE
+    codes = [client.post("/tester/test/setup", json={"target_url": TARGET}).status_code
+             for _ in range(SETUPS_PER_MINUTE + 1)]
+    assert codes == [201] * SETUPS_PER_MINUTE + [429]
+
+
+def test_run_time_budget_skips_remaining_checks(app, client):
+    app.state.tester_run_budget = -1                                   # already used up when the run starts
+    sid = client.post("/tester/test/setup", json={"target_url": TARGET}).json()["session_id"]
+    report = client.post("/tester/test/run", json={"session_id": sid}).json()
+    assert report_problems(report, sid, TARGET) == []
+    assert {r["outcome"] for r in report["results"]} == {"skip"}

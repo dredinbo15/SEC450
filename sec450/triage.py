@@ -169,8 +169,13 @@ def run_triage(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMC
     """Freeze settled clusters and triage those at medium severity or higher.
 
     Clusters left in TRIAGE_PENDING by a crash are picked up again here.
+
+    Once one cluster has used all its attempts, the rest of this cycle's clusters are marked
+    TRIAGE_UNAVAILABLE without calling the LLM: waiting out 3 attempts each during an outage
+    would delay their reports past REQ-06's 10 minutes. The next cycle tries the LLM again.
     """
     now = clock.now()
+    llm_down = False
     settle = timedelta(seconds=cfg.triage.settle_seconds)
     max_wait = timedelta(seconds=cfg.triage.max_wait_seconds)
     rows = conn.execute(
@@ -196,14 +201,17 @@ def run_triage(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMC
                 continue
             cluster = conn.execute("SELECT * FROM cluster WHERE cluster_id = ?",
                                    (cluster["cluster_id"],)).fetchone()
-        if not cfg.triage.enabled or client is None:
+        if not cfg.triage.enabled or client is None or llm_down:
             with transaction(conn) as c:
                 c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?",
                           (cluster["cluster_id"],))
+            if llm_down:
+                log.warning("LLM failed earlier this cycle; triage unavailable",
+                            extra={"cluster_id": cluster["cluster_id"]})
             continue
         if not _within_daily_budget(conn, cfg, cluster["cluster_id"], now):
             continue
-        triage_cluster(conn, cluster, cfg, client, clock)
+        llm_down = triage_cluster(conn, cluster, cfg, client, clock) == "TRIAGE_UNAVAILABLE"
 
 
 def _within_daily_budget(conn: sqlite3.Connection, cfg: Config, cluster_id: int, now: datetime) -> bool:

@@ -29,13 +29,23 @@ CANDIDATE_SQL = {
 }
 
 
+def _first_raw_collected_since(conn: sqlite3.Connection, since: str) -> int | None:
+    """Lowest raw_id stored by a batch collected at or after `since` (raw ids grow with batches)."""
+    return conn.execute(
+        "SELECT MIN(r.raw_id) FROM raw_line r WHERE r.batch_id = "
+        "(SELECT MIN(batch_id) FROM batch WHERE collected_at >= ?)", (since,)).fetchone()[0]
+
+
 def _candidates(conn: sqlite3.Connection, rule: RuleConfig, since: str) -> dict[str, list[sqlite3.Row]]:
-    params: list = [since]
+    # Events stamped inside the scan window, plus events collected inside it whatever their
+    # timestamp: lines that arrive late (a source back after a long gap) are still evaluated.
+    params: list = [since, _first_raw_collected_since(conn, since)]
     if rule.kind == "failed_login_count":
         params += LOGIN_ACTIONS
     rows = conn.execute(
         f"SELECT event_id, ts, client_ip, target, bytes_sent FROM event "
-        f"WHERE ts >= ? AND client_ip IS NOT NULL AND {CANDIDATE_SQL[rule.kind]} ORDER BY ts, event_id",
+        f"WHERE (ts >= ? OR raw_id >= ?) AND client_ip IS NOT NULL AND {CANDIDATE_SQL[rule.kind]} "
+        f"ORDER BY ts, event_id",
         params,
     ).fetchall()
     groups: dict[str, list[sqlite3.Row]] = defaultdict(list)

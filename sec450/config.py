@@ -140,6 +140,8 @@ class ApiConfig(BaseModel):
     tls_cert: Path = Path("certs/server.crt")
     tls_key: Path = Path("certs/server.key")
     rate_limit_per_minute: int = 60
+    # Requests without a valid key, per client address (behind the tunnel: all internet traffic).
+    unauthenticated_rate_limit_per_minute: int = Field(30, ge=1)
     max_span_days: int = 31
     default_span_hours: int = 24
     default_limit: int = 100

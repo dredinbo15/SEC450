@@ -130,3 +130,18 @@ def test_invalid_pattern_rejected_at_startup(cfg):
 def test_pattern_rule_without_patterns_rejected(cfg):
     with pytest.raises(ValidationError, match="at least one pattern"):
         Config.model_validate(_rules_with(cfg, patterns=[]))
+
+
+def test_late_collected_events_are_evaluated(cfg, conn, clock):
+    """Lines stamped long before they were collected (a source back after a long gap) still match rules."""
+    clock.advance(3600)
+    insert_events(conn, failed_logins(spread(5, 60)), collected_at=iso(clock.now()))
+    run_detection(conn, cfg, clock)
+    assert clusters(conn) == [("R1", "high")]
+
+
+def test_old_events_collected_long_ago_are_not_rescanned(cfg, conn, clock):
+    insert_events(conn, failed_logins(spread(5, 60)), collected_at=at(0))
+    clock.advance(3600)
+    run_detection(conn, cfg, clock)
+    assert clusters(conn) == []

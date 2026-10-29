@@ -123,3 +123,60 @@ def test_retention_boundaries(cfg, conn, clock):  # AC-22
     types = sorted(r[0] for r in conn.execute("SELECT object_type FROM deletion_record"))
     assert types == ["batch", "event", "raw_line", "report"]
     assert verify_batches(conn)["status"] == "intact"
+
+
+def test_invalid_utf8_is_kept_byte_for_byte(cfg, conn, clock):  # REQ-08
+    src = app_source(cfg)
+    bad = app_line(1).encode().replace(b"/p/1", b"/p/\xff\xfe").rstrip(b"\n")
+    Path(src.path).write_bytes(bad + b"\n" + app_line(2).encode())
+    Collector(cfg, conn, clock, GeoIP()).collect_source(src)
+    rows = conn.execute("SELECT text, raw_bytes FROM raw_line ORDER BY seq").fetchall()
+    assert rows[0]["raw_bytes"] == bad and "�" in rows[0]["text"]
+    assert rows[1]["raw_bytes"] is None                                  # valid UTF-8: text alone is exact
+    assert verify_batches(conn)["status"] == "intact"
+
+    conn.execute("DROP TRIGGER raw_line_no_update")
+    conn.execute("UPDATE raw_line SET raw_bytes = ? WHERE seq = 0", (bad.replace(b"\xff", b"\xfd"),))
+    assert verify_batches(conn)["reason"] == "content hash mismatch"     # the hash covers the bytes as read
+
+
+def test_report_integrity_rehashes_only_its_own_batches(conn):  # REQ-06, REQ-08
+    from sec450.reports import integrity
+    a = insert_events(conn, [{}])
+    b = insert_events(conn, [{}])
+    conn.execute("DROP TRIGGER raw_line_no_update")
+    conn.execute("UPDATE raw_line SET text = 'tampered' WHERE batch_id = ?", (a,))
+    assert integrity(conn, {b})["status"] == "intact"                    # another batch's lines: not this report's
+    broken = integrity(conn, {a})
+    assert (broken["status"], broken["batch_id"]) == ("broken", a)
+    conn.execute("UPDATE batch SET lines_hash = ? WHERE batch_id = ?", ("0" * 64, a))
+    assert integrity(conn, {b})["status"] == "broken"                    # a forged lines_hash breaks the chain
+
+
+def test_database_from_before_lines_hash_is_migrated(tmp_path):
+    """init_db adds the new columns to an older database; its batches still verify from their lines."""
+    import sqlite3
+
+    from sec450 import hashchain
+    from sec450.db import connect, init_db
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(
+        "CREATE TABLE batch (batch_id INTEGER PRIMARY KEY, source TEXT NOT NULL, collected_at TEXT NOT NULL, "
+        "line_count INTEGER NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL UNIQUE);"
+        "CREATE TABLE raw_line (raw_id INTEGER PRIMARY KEY, batch_id INTEGER NOT NULL, seq INTEGER NOT NULL, "
+        "text TEXT NOT NULL, status TEXT NOT NULL, quarantine_reason TEXT, UNIQUE (batch_id, seq));")
+    digest = hashchain.batch_hash(hashchain.GENESIS, "app", iso(T0), ["a", "b"])
+    old.execute("INSERT INTO batch VALUES (1, 'app', ?, 2, ?, ?)", (iso(T0), hashchain.GENESIS, digest))
+    old.executemany("INSERT INTO raw_line (batch_id, seq, text, status) VALUES (1, ?, ?, 'parsed')",
+                    [(0, "a"), (1, "b")])
+    old.commit()
+    old.close()
+
+    conn = connect(path)
+    init_db(conn)
+    init_db(conn)                                                        # a second start is a no-op
+    assert {"lines_hash"} <= {r["name"] for r in conn.execute("PRAGMA table_info(batch)")}
+    assert {"raw_bytes"} <= {r["name"] for r in conn.execute("PRAGMA table_info(raw_line)")}
+    assert verify_batches(conn, content_ids=set()) == {"status": "intact", "batches": 1}
+    conn.close()

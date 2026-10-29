@@ -57,9 +57,10 @@ def insert_events(conn, events: list[dict], source: str = "app", collected_at: s
         first_id, _ = hashchain.anchor(c, "batch")
         batch_id = max(c.execute("SELECT COALESCE(MAX(batch_id), 0) FROM batch").fetchone()[0] + 1, first_id or 1)
         prev = hashchain.last_hash(c, "batch")
-        c.execute("INSERT INTO batch VALUES (?, ?, ?, ?, ?, ?)",
+        c.execute("INSERT INTO batch (batch_id, source, collected_at, line_count, prev_hash, hash, lines_hash) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?)",
                   (batch_id, source, collected_at, len(lines), prev,
-                   hashchain.batch_hash(prev, source, collected_at, lines)))
+                   hashchain.batch_hash(prev, source, collected_at, lines), hashchain.lines_digest(lines)))
         for seq, (text, e) in enumerate(zip(lines, events, strict=True)):
             raw_id = c.execute("INSERT INTO raw_line (batch_id, seq, text, status) VALUES (?, ?, ?, 'parsed')",
                                (batch_id, seq, text)).lastrowid

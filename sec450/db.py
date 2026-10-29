@@ -20,8 +20,11 @@ CREATE TABLE IF NOT EXISTS batch (
     collected_at  TEXT NOT NULL,
     line_count    INTEGER NOT NULL CHECK (line_count >= 1),
     prev_hash     TEXT NOT NULL,
-    hash          TEXT NOT NULL UNIQUE
+    hash          TEXT NOT NULL UNIQUE,
+    -- SHA-256 of the batch's lines, so the chain can be checked without reading them (NULL on old rows)
+    lines_hash    TEXT
 );
+CREATE INDEX IF NOT EXISTS ix_batch_collected ON batch(collected_at);
 
 CREATE TABLE IF NOT EXISTS raw_line (
     raw_id             INTEGER PRIMARY KEY,
@@ -30,6 +33,8 @@ CREATE TABLE IF NOT EXISTS raw_line (
     text               TEXT NOT NULL,
     status             TEXT NOT NULL CHECK (status IN ('parsed', 'quarantined')),
     quarantine_reason  TEXT,
+    -- The line exactly as read, only when it was not valid UTF-8 (text then holds a lossy decode)
+    raw_bytes          BLOB,
     UNIQUE (batch_id, seq)
 );
 
@@ -194,8 +199,20 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release: CREATE TABLE IF NOT EXISTS leaves older databases without them.
+ADDED_COLUMNS = (("batch", "lines_hash", "TEXT"), ("raw_line", "raw_bytes", "BLOB"))
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    for table, column, decl in ADDED_COLUMNS:
+        if column in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        except sqlite3.OperationalError as exc:  # the collector and api start together; one of them wins
+            if "duplicate column" not in str(exc):
+                raise
 
 
 @contextmanager

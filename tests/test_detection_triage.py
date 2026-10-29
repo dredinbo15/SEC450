@@ -135,3 +135,20 @@ def test_daily_ai_limit_zero_and_unlimited(cfg, conn, clock):
     clock.advance(600)
     run_triage(conn, cfg, clock, llm)
     assert llm.calls == 2
+
+
+def test_llm_outage_costs_one_cluster_per_cycle(cfg, conn, clock):  # REQ-04, REQ-06
+    """After one cluster uses all its attempts, the rest of the cycle skips the LLM; the next cycle retries."""
+    for sev in ("high", "high", "medium"):
+        _make_cluster(conn, sev)
+    clock.advance(600)
+    down = MockLLMClient("http_error")
+    run_triage(conn, cfg, clock, down)
+    assert down.calls == 3                                  # one cluster's 3 attempts, not 9
+    assert {s for _, s, _ in _states(conn)} == {"TRIAGE_UNAVAILABLE"}
+
+    _make_cluster(conn, "high")
+    clock.advance(600)
+    up = MockLLMClient("ok")
+    run_triage(conn, cfg, clock, up)
+    assert up.calls == 1 and _states(conn)[-1] == ("high", "TRIAGED", "critical")
