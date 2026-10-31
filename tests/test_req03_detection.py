@@ -127,6 +127,50 @@ def test_invalid_pattern_rejected_at_startup(cfg):
         Config.model_validate(_rules_with(cfg, patterns=["(unclosed"]))
 
 
+# AC-07: Five runs per detection rule, 20 runs total.
+AC07_CASES = {
+    "R1": failed_logins(spread(5, 4)),
+    "R2": distinct_404s(spread(20, 4)),
+    "R3": [{"ts": at(4), "target": "/download?file=../../etc/passwd"}],
+    "R4": transfer(10_485_761, 4),
+}
+
+
+@pytest.mark.parametrize("run_number", range(1, 6))
+@pytest.mark.parametrize("rule_id,events", AC07_CASES.items())
+def test_ac07_detection_latency(cfg, conn, clock, rule_id, events, run_number):
+    # Each test gets a fresh database and clock from pytest fixtures.
+    insert_events(conn, events)
+
+    # Simulate detection running 10 seconds after the reference start time.
+    clock.advance(10)
+    run_detection(conn, cfg, clock)
+
+    row = conn.execute(
+        """
+        SELECT cl.created_at, MAX(e.ts) AS last_triggering_line
+        FROM cluster cl
+        JOIN cluster_event ce USING (cluster_id)
+        JOIN event e USING (event_id)
+        WHERE cl.rule_id = ?
+        GROUP BY cl.cluster_id
+        ORDER BY cl.cluster_id DESC
+        LIMIT 1
+        """,
+        (rule_id,),
+    ).fetchone()
+
+    assert row is not None, f"{rule_id} run {run_number}: no cluster created"
+
+    latency = (
+        parse_iso(row["created_at"]) - parse_iso(row["last_triggering_line"])
+    ).total_seconds()
+
+    print(f"AC-07 {rule_id} run {run_number}: {latency:.1f} seconds")
+    assert 0 <= latency <= 300, (
+        f"{rule_id} run {run_number}: detection latency {latency:.1f}s exceeds 300s"
+    )
+
 def test_pattern_rule_without_patterns_rejected(cfg):
     with pytest.raises(ValidationError, match="at least one pattern"):
         Config.model_validate(_rules_with(cfg, patterns=[]))
