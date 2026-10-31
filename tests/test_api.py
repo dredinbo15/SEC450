@@ -94,3 +94,18 @@ def test_logs(api, conn):  # raw lines for the pod, credentials masked
     assert client.get("/v1/logs?limit=1").json()["count"] == 1
     assert client.get("/v1/logs?foo=bar").status_code == 400
     assert client.get("/v1/logs", headers={"Authorization": ""}).status_code == 401
+
+
+def test_usage_counts_every_audited_request(api, conn):
+    from sec450.usage import usage
+    client, key_id = api
+    client.get("/v1/events")
+    client.get("/v1/reports")
+    client.get("/v1/events?limit=0")
+    client.get("/v1/events", headers={"Authorization": "Bearer bad"})
+    result = usage(conn)
+    assert result["total"] == 4
+    assert result["by_key"] == {key_id: 3, "(no valid key)": 1}
+    assert result["by_path"] == {"/v1/events": 3, "/v1/reports": 1}
+    assert result["by_status"] == {"200": 2, "400": 1, "401": 1}
+    assert usage(conn, since="2099-01-01T00:00:00.000000Z")["total"] == 0

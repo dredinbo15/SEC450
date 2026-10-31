@@ -25,6 +25,7 @@ curl -k -H "Authorization: Bearer <key>" https://localhost/v1/reports        # l
 curl -k -H "Authorization: Bearer <key>" https://localhost/v1/reports/1      # one report
 curl -k -H "Authorization: Bearer <key>" https://localhost/v1/logs           # raw log lines, credentials masked
 docker compose exec collector python -m sec450.verify        # check both hash chains
+docker compose exec api python -m sec450.usage               # request counts by day, key, path, status (--days 0 = all time)
 docker compose logs -f collector                             # JSON logs
 ```
 
