@@ -24,7 +24,7 @@ from ..db import connect, init_db
 from ..keys import lookup_key
 from ..timeutil import Clock, iso
 from .audit import write_audit
-from .query import QueryError, parse_query, query_clusters, query_events, query_reports
+from .query import QueryError, parse_query, query_clusters, query_events, query_logs, query_reports
 from .ratelimit import RateLimiter
 from .testing import install as install_testing_interface
 
@@ -116,6 +116,12 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
     @app.get("/v1/events")
     def events(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
         result = query_events(conn, parse_query(request.query_params, cfg.api, clock.now()))
+        request.state.result_count = result["count"]
+        return result
+
+    @app.get("/v1/logs")
+    def logs(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        result = query_logs(conn, parse_query(request.query_params, cfg.api, clock.now()))
         request.state.result_count = result["count"]
         return result
 

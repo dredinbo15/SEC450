@@ -78,3 +78,19 @@ def test_audit_chain_and_fail_closed(api, conn):  # AC-26
     conn.execute("CREATE TRIGGER block_audit BEFORE INSERT ON audit_entry BEGIN SELECT RAISE(ABORT, 'no'); END")
     r = client.get("/v1/events")
     assert r.status_code == 500 and "events" not in r.json()
+
+
+def test_logs(api, conn):  # raw lines for the pod, credentials masked
+    insert_events(conn, [{"ts": "2026-10-08T13:00:00.000000Z", "client_ip": "198.51.100.1",
+                          "target": "/login?password=hunter2&user=a"},
+                         {"ts": "2026-10-08T13:01:00.000000Z", "client_ip": "198.51.100.2", "username": "b"}])
+    client, _ = api
+    body = client.get("/v1/logs").json()
+    assert body["count"] == 2 and set(body["logs"][0]) == {"event_id", "raw_id", "ts", "source", "host",
+                                                           "client_ip", "username", "text"}
+    line = client.get("/v1/logs?source_ip=198.51.100.1").json()["logs"]
+    assert len(line) == 1 and "hunter2" not in line[0]["text"] and "password=[REDACTED]" in line[0]["text"]
+    assert client.get("/v1/logs?user=b").json()["logs"][0]["client_ip"] == "198.51.100.2"
+    assert client.get("/v1/logs?limit=1").json()["count"] == 1
+    assert client.get("/v1/logs?foo=bar").status_code == 400
+    assert client.get("/v1/logs", headers={"Authorization": ""}).status_code == 401

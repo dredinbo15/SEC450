@@ -21,6 +21,7 @@ docker compose ps                      # wait until collector and api show "heal
 docker compose exec api python -m sec450.keys create         # prints a key once; only its hash is stored
 curl -k -H "Authorization: Bearer <key>" https://localhost/v1/reports        # list reports (last 24 h)
 curl -k -H "Authorization: Bearer <key>" https://localhost/v1/reports/1      # one report
+curl -k -H "Authorization: Bearer <key>" https://localhost/v1/logs           # raw log lines, credentials masked
 docker compose exec collector python -m sec450.verify        # check both hash chains
 docker compose logs -f collector                             # JSON logs
 ```

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from starlette.datastructures import QueryParams
 
 from ..config import SEVERITY_ORDER, ApiConfig
+from ..redact import redact_text
 from ..reports import overlapping_gaps
 from ..timeutil import iso, parse_iso
 
@@ -110,6 +111,29 @@ def query_events(conn: sqlite3.Connection, q: Query) -> dict:
     for r in rows:
         r["clock_anomaly"] = bool(r["clock_anomaly"])
     return _envelope(conn, q, "events", rows)
+
+
+def query_logs(conn: sqlite3.Connection, q: Query) -> dict:
+    """The raw log lines behind events, with credentials masked (redact_text) before they leave."""
+    sql = ["SELECT e.event_id, e.raw_id, e.ts, e.source, e.host, e.client_ip, e.username, r.text "
+           "FROM event e JOIN raw_line r USING (raw_id) WHERE e.ts >= ? AND e.ts <= ?"]
+    args: list = [q.start, q.end]
+    if q.source_ip:
+        sql.append("AND e.client_ip = ?")
+        args.append(q.source_ip)
+    if q.user:
+        sql.append("AND e.username = ?")
+        args.append(q.user)
+    if q.severity:
+        sql.append("AND EXISTS (SELECT 1 FROM cluster_event ce JOIN cluster c USING (cluster_id) "
+                   "WHERE ce.event_id = e.event_id AND c.severity = ?)")
+        args.append(q.severity)
+    sql.append("ORDER BY e.ts DESC, e.event_id DESC LIMIT ?")
+    args.append(q.limit)
+    rows = [dict(r) for r in conn.execute(" ".join(sql), args)]
+    for r in rows:
+        r["text"] = redact_text(r["text"])
+    return _envelope(conn, q, "logs", rows)
 
 
 def _cluster_filters(q: Query) -> tuple[str, list]:

@@ -81,6 +81,26 @@ curl -s "https://seclog.redinbo.win/test/report?session_id=<id>"
 
 `tests/test_testing_interface.py` replays this sequence in CI and applies the staff checker's format rules.
 
+## Logs for the pod
+
+The other pod can pull our log lines with **`GET https://seclog.redinbo.win/v1/logs`**, using a key from Team 102 (`Authorization: Bearer <key>`). Like every `/v1` read, it is rate limited (60 requests per minute per key) and every request is audited.
+
+- **Parameters** (all optional, same rules as `/v1/events`):
+  - `start`, `end`: ISO 8601 timestamps with a UTC offset. The defaults are the last 24 h, and the span is at most 31 days.
+  - `source_ip`, `user`: filter by client IP or username.
+  - `severity`: only lines in a cluster of that severity.
+  - `limit`: 1 to 1000, default 100. Results are newest first.
+- **Returns** `200 {"query", "count", "collection_gaps", "logs": [...]}`. Each log entry is `{event_id, raw_id, ts, source, host, client_ip, username, text}`.
+  - `ts` is the event time in UTC.
+  - `source` is `nginx_access`, `nginx_error`, `ssh_auth` or `app`.
+  - `text` is the original log line with credentials masked as `[REDACTED]`: passwords, tokens, API keys, cookies, Authorization headers and long opaque strings. Attack strings are kept.
+- **Errors:** `400` for an invalid parameter, and `401` for a missing or wrong key.
+
+```sh
+curl -H "Authorization: Bearer <key>" \
+  "https://seclog.redinbo.win/v1/logs?start=2026-10-30T00:00:00Z&severity=high&limit=500"
+```
+
 ## What we send to the pod
 
 The collector posts each high and critical report, and optionally each finished medium cluster, to the pod's incident-management API as `POST /api/v1/incidents` with `{title, log, occurredAt, source}` (DD-18; see README, "Posting incidents to the incident-management API"). Each report is sent once, and the returned incident ID is stored.
