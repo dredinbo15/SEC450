@@ -5,14 +5,13 @@ import ssl
 
 import uvicorn
 
-from ..config import load_config
+from ..config import Config, load_config
 from ..logjson import setup_logging
 from .app import create_app
 
 
-def main() -> None:
-    setup_logging()
-    cfg = load_config()
+def server_config(cfg: Config) -> uvicorn.Config:
+    """The uvicorn settings the service runs with; tests serve this same config (AC-23)."""
     config = uvicorn.Config(
         create_app(cfg), host=cfg.api.host, port=cfg.api.port,
         ssl_certfile=str(cfg.api.tls_cert), ssl_keyfile=str(cfg.api.tls_key),
@@ -24,7 +23,12 @@ def main() -> None:
     if config.ssl is None:  # uvicorn builds this from the cert/key above
         raise RuntimeError("TLS is not configured; refusing to serve plain HTTP")
     config.ssl.minimum_version = ssl.TLSVersion.TLSv1_2
-    uvicorn.Server(config).run()
+    return config
+
+
+def main() -> None:
+    setup_logging()
+    uvicorn.Server(server_config(load_config())).run()
 
 
 if __name__ == "__main__":

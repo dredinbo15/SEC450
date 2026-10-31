@@ -11,6 +11,7 @@ from sec450.geoip import GeoIP
 from sec450.timeutil import iso, parse_iso
 
 from .conftest import T0, insert_events
+from .scenarios import LabTraffic, latency_seconds, play
 
 
 def at(seconds: float) -> str:
@@ -130,3 +131,18 @@ def test_invalid_pattern_rejected_at_startup(cfg):
 def test_pattern_rule_without_patterns_rejected(cfg):
     with pytest.raises(ValidationError, match="at least one pattern"):
         Config.model_validate(_rules_with(cfg, patterns=[]))
+
+
+def test_detection_latency(cfg, conn, clock):  # AC-07
+    """Each attack script 5 times (20 runs) over baseline traffic, collected every 60 s: the
+    cluster exists within 300 s of the line that completed the rule's condition."""
+    traffic = LabTraffic(cfg, seed=7, start=T0)
+    traffic.baseline(minutes=50)
+    kinds = ["ssh_bruteforce", "scan_404", "injection", "large_transfer"]
+    attacks = [traffic.attack(kind, at=60 + 140 * n + 7.3 * n % 60) for n, kind in enumerate(kinds * 5)]
+    play(traffic, cfg, conn, clock, until=T0 + timedelta(minutes=55))
+
+    latencies = {f"{a.kind} {a.ip}": latency_seconds(conn, a) for a in attacks}
+    print("\nAC-07 latency (s):", {k: v if v is None else round(v, 1) for k, v in latencies.items()})
+    assert all(v is not None for v in latencies.values()), latencies
+    assert all(0 <= v <= 300 for v in latencies.values()), latencies   # type: ignore[operator]

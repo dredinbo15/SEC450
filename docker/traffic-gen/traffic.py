@@ -19,7 +19,8 @@ Each attack is printed as a JSON "ground_truth" line so detection accuracy
 (REQ-11) can be scored against `docker compose logs traffic-gen`.
 
 Note: all traffic comes from this container's single IP, so baseline and attack
-traffic share a source address. REQ-11 scoring will need separate source IPs.
+traffic share a source address. REQ-11 is therefore scored by tests/scenarios.py
+(AC-28), which gives every attack its own address.
 """
 from __future__ import annotations
 

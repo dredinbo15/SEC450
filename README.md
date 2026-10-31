@@ -6,6 +6,8 @@
 
 **Status:** all four lab sources run: an SSH server (ssh01), nginx (web01) and a small JSON API app (app01) behind nginx, which is the trusted proxy at 172.20.0.10. `traffic-gen` rotates through one attack per rule (SSH brute force, 404 scan, injection probes, a 12 MB download, app login brute force), one every ~22 minutes, with normal browsing in between. Triage uses the mock LLM by default.
 
+**Acceptance criteria:** every automated check passes in CI: the 21 fully automated criteria, plus the automated part of AC-20, AC-24, AC-27 and AC-28. The manual steps (AC-08, AC-12, AC-16, AC-29, AC-30 and the review parts of those four) need team members. [docs/acceptance.md](docs/acceptance.md) has the per-criterion status, the procedures and the inspection notes.
+
 You need Docker Desktop (or Docker Engine with Compose v2.24+). From the repo root:
 
 ```sh
@@ -87,13 +89,13 @@ The `api` container also serves the course's `/test` endpoints: the system at `h
 python -m venv .venv
 .venv/Scripts/activate            # macOS/Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest                            # unit + thin-slice tests, about 15 s
+pytest                            # all automated acceptance tests, about 50 s
 ruff check sec450 tests docker
 mypy sec450
 bandit -c pyproject.toml -r sec450 docker
 ```
 
-Test hooks: `sec450/mock_llm.py` (mock LLM: ok, timeout, http_error, bad_json, missing_field), `FixedClock` in `sec450/timeutil.py` (injectable clock), and `tests/fixtures/logs/` (fixture log files).
+Test hooks: `sec450/mock_llm.py` (mock LLM: ok, timeout, http_error, bad_json, missing_field), `FixedClock` in `sec450/timeutil.py` (injectable clock), and `tests/fixtures/logs/` (fixture log files). `tests/scenarios.py` generates seeded attack and baseline traffic for AC-07 and AC-28. Add `-s` to print the latency, performance and accuracy numbers.
 
 ## Requirements
 

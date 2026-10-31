@@ -104,7 +104,7 @@ services:
     environment:
       SEC450_SELF_SIGNED_CERT: "1"        # entrypoint creates a TLS cert on first start
     ports:
-      - "443:8443"
+      - "443:8443"                        # container side must match api.port in config.yaml
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - db:/data
@@ -113,8 +113,9 @@ services:
       collector:
         condition: service_started
     healthcheck:
+      # Reads api.port from config.yaml, so changing the port there needs no edit here (AC-30).
       test: ["CMD", "python", "-c",
-             "import ssl,urllib.request; urllib.request.urlopen('https://localhost:8443/health', context=ssl._create_unverified_context(), timeout=3)"]
+             "import ssl,urllib.request; from sec450.config import load_config; urllib.request.urlopen(f'https://localhost:{load_config().api.port}/health', context=ssl._create_unverified_context(), timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5
