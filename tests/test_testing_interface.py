@@ -95,7 +95,7 @@ def test_grader_flow_against_own_system(client, conn):
 def test_source_ip_filter_skips_past_events_without_a_client_ip(client, conn, clock):
     """Live data: the newest events are mostly sshd healthcheck disconnects with no requester."""
     insert_events(conn, [{"ts": iso(clock.now() - timedelta(seconds=i)), "source": "ssh_auth", "client_ip": None,
-                          "action": "sshd_other", "outcome": "unknown"} for i in range(1, 51)])
+                          "action": "sshd_other", "outcome": "unknown"} for i in range(1, 201)])
     sid = client.post("/tester/test/setup", json={"target_url": TARGET}).json()["session_id"]
     results = {r["test_id"]: r for r in client.post("/tester/test/run", json={"session_id": sid}).json()["results"]}
     assert results["filter-source-ip"]["outcome"] == "pass", results["filter-source-ip"]
