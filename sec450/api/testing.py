@@ -1,6 +1,6 @@
 """Course testing interface: the system and tester /test endpoints (docs/testing-interface.md).
 
-System (base URL https://seclog.redinbo.win):
+System (base URL https://seclog.redinbo.win, or the same with /system appended):
     POST /test/setup   {session_id, setup}  -> 201 {session_id}
     GET  /test/report?session_id=...        -> 200 {session_id, coverage: {code}}
 Tester (base URL https://seclog.redinbo.win/tester):
@@ -472,7 +472,8 @@ def install(app: FastAPI, cfg: Config) -> None:
             return problem(400, "body must be a JSON object with a target_url string", "tester")
         target = target.strip().rstrip("/")
         parts = urlsplit(target)
-        is_self = parts.netloc.lower() == request.headers.get("host", "").lower() and parts.path in ("", "/")
+        is_self = (parts.netloc.lower() == request.headers.get("host", "").lower()
+                   and parts.path in ("", "/", "/system"))
         if not is_self:
             refused = await run_in_threadpool(app.state.tester_target_guard, target)
             if refused:

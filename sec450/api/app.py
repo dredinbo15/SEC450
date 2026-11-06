@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .. import hashchain
 from ..config import Config
@@ -29,6 +30,25 @@ from .ratelimit import RateLimiter
 from .testing import install as install_testing_interface
 
 log = logging.getLogger(__name__)
+
+SYSTEM_PREFIX = "/system"
+
+
+class SystemAlias:
+    """Serve every endpoint under /system as well (/system/test/setup, /system/v1/events, ...),
+    so testers can use https://<host>/system as the system's base URL, beside /tester."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope["path"]
+            if path == SYSTEM_PREFIX or path.startswith(SYSTEM_PREFIX + "/"):
+                raw = scope.get("raw_path") or path.encode()
+                scope = {**scope, "path": path[len(SYSTEM_PREFIX):] or "/",
+                         "raw_path": raw[len(SYSTEM_PREFIX):] or b"/"}
+        await self.app(scope, receive, send)
 
 
 def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
@@ -162,4 +182,7 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
         return {"batches": hashchain.verify_batches(conn), "audit": hashchain.verify_audit(conn)}
 
     install_testing_interface(app, cfg)
+    # Added last, so it runs first: the security middleware and the router see /v1/... and
+    # /test/... whichever base URL the client used.
+    app.add_middleware(SystemAlias)
     return app

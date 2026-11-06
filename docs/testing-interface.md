@@ -4,10 +4,10 @@ This is the spec for the course's cross-team testing. Both services run in the `
 
 | Service | Base URL | Endpoints |
 |---|---|---|
-| System | `https://seclog.redinbo.win` | `POST /test/setup`, `GET /test/report`, plus the SEC450 query API (`/health`, `/v1/...`) |
+| System | `https://seclog.redinbo.win` (or `https://seclog.redinbo.win/system`) | `POST /test/setup`, `GET /test/report`, plus the SEC450 query API (`/health`, `/v1/...`) |
 | Tester | `https://seclog.redinbo.win/tester` | `POST /test/setup`, `POST /test/run`, `GET /test/report` |
 
-`GET /test` on either base URL lists the endpoints. Errors on every `/test` endpoint are JSON `{"message": "...", "source": "tester" | "system" | "communication" | "unknown"}`.
+Every system endpoint is also served under `/system`, so `https://seclog.redinbo.win/system` works as the system's base URL beside `/tester`. Through that alias, `/v1` requests are authenticated, rate-limited and audited exactly as usual, and the tester treats both forms of the URL as this deployment. `GET /test` on any base URL lists the endpoints. Errors on every `/test` endpoint are JSON `{"message": "...", "source": "tester" | "system" | "communication" | "unknown"}`.
 
 ## Access
 

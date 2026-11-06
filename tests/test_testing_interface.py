@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sec450.api.app import create_app
+from sec450.keys import create_key
 from sec450.mock_llm import MockLLMClient
 from sec450.timeutil import iso
 
@@ -98,6 +99,26 @@ def test_source_ip_filter_skips_past_events_without_a_client_ip(client, conn, cl
     sid = client.post("/tester/test/setup", json={"target_url": TARGET}).json()["session_id"]
     results = {r["test_id"]: r for r in client.post("/tester/test/run", json={"session_id": sid}).json()["results"]}
     assert results["filter-source-ip"]["outcome"] == "pass", results["filter-source-ip"]
+
+
+def test_system_endpoints_also_served_under_system_prefix(client, conn, clock):
+    _, key = create_key(conn, clock)
+    assert client.get("/system/health").json() == {"status": "ok"}
+    assert client.get("/system/test").json() == client.get("/test").json()
+    assert client.post("/system/test/setup", json={"session_id": "alias", "setup": {}}).status_code == 201
+    assert client.get("/system/test/report", params={"session_id": "alias"}).status_code == 200
+    assert client.get("/system/v1/events").status_code == 401                      # still authenticated
+    assert client.get("/system/v1/events", headers={"Authorization": f"Bearer {key}"}).status_code == 200
+    assert conn.execute("SELECT path FROM audit_entry ORDER BY entry_id DESC LIMIT 1").fetchone()[0] == "/v1/events"
+    assert client.get("/systemx/health").status_code == 404
+
+
+def test_tester_treats_system_prefix_as_this_deployment(client):
+    target = TARGET + "/system"
+    sid = client.post("/tester/test/setup", json={"target_url": target}).json()["session_id"]
+    report = client.post("/tester/test/run", json={"session_id": sid}).json()
+    assert report_problems(report, sid, target) == []
+    assert [r for r in report["results"] if r["outcome"] != "pass"] == []     # key checks ran, none skipped
 
 
 def test_each_session_runs_once_and_reports_need_a_finished_run(client):
