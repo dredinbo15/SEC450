@@ -324,10 +324,12 @@ class Suite:
         return "pass", f"latest event at {r.json()['events'][0].get('ts')}"
 
     def _filter_source_ip(self) -> tuple[str, str]:
-        latest = self.get("/v1/events", {"limit": "1"}).json().get("events") or []
-        ip = latest[0].get("client_ip") if latest else None
+        # The newest events are often lines without a requester (e.g. sshd healthcheck
+        # disconnects), so filter on the newest event among the latest 100 that has one.
+        latest = self.get("/v1/events", {"limit": "100"}).json().get("events") or []
+        ip = next((e["client_ip"] for e in latest if e.get("client_ip")), None)
         if not ip:
-            return "skip", "no recent event with a client IP to filter on"
+            return "skip", "none of the latest 100 events has a client IP to filter on"
         r = self.get("/v1/events", {"source_ip": ip, "limit": "1000"})
         events = r.json().get("events", []) if r.status_code == 200 else []
         if r.status_code != 200 or not events:

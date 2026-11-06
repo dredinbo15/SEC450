@@ -3,12 +3,16 @@
 test_grader_flow_against_own_system replays the course's grading sequence (tester setup with the
 target, run, stored report, system report) and applies the same format rules as the staff checker.
 """
+from datetime import timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 
 from sec450.api.app import create_app
 from sec450.mock_llm import MockLLMClient
+from sec450.timeutil import iso
 
+from .conftest import insert_events
 from .test_thin_slice import _run_pipeline
 
 OUTCOMES = {"pass", "fail", "error", "skip"}
@@ -85,6 +89,15 @@ def test_grader_flow_against_own_system(client, conn):
     # The run's key was revoked afterwards, and its requests were audited with the chain intact.
     assert conn.execute("SELECT COUNT(*) FROM api_key WHERE revoked = 0").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM audit_entry").fetchone()[0] > 20
+
+
+def test_source_ip_filter_skips_past_events_without_a_client_ip(client, conn, clock):
+    """Live data: the newest events are mostly sshd healthcheck disconnects with no requester."""
+    insert_events(conn, [{"ts": iso(clock.now() - timedelta(seconds=i)), "source": "ssh_auth", "client_ip": None,
+                          "action": "sshd_other", "outcome": "unknown"} for i in range(1, 51)])
+    sid = client.post("/tester/test/setup", json={"target_url": TARGET}).json()["session_id"]
+    results = {r["test_id"]: r for r in client.post("/tester/test/run", json={"session_id": sid}).json()["results"]}
+    assert results["filter-source-ip"]["outcome"] == "pass", results["filter-source-ip"]
 
 
 def test_each_session_runs_once_and_reports_need_a_finished_run(client):
