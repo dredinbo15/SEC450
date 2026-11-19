@@ -549,7 +549,7 @@ def _run_suite(app: FastAPI, cfg: Config, sid: str, session: TesterSession) -> d
     if session.is_self:
         # A fresh read-only key per run (so repeated runs never share a rate-limit bucket),
         # revoked when the run ends; only its hash is ever stored (DD-11).
-        conn = connect(cfg.database_path)
+        conn = connect(cfg.database)
         try:
             key_id, key = create_key(conn)
         finally:
@@ -562,7 +562,7 @@ def _run_suite(app: FastAPI, cfg: Config, sid: str, session: TesterSession) -> d
             return suite.report(session.target_url)
     finally:
         if key_id:
-            conn = connect(cfg.database_path)
+            conn = connect(cfg.database)
             try:
                 revoke_key(conn, key_id)
             finally:

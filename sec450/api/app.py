@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import sqlite3
 import time
 import uuid
 from collections.abc import Iterator
@@ -21,7 +20,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .. import hashchain
 from ..config import Config
-from ..db import connect, init_db
+from ..db import Connection, Pool, init_db
 from ..keys import lookup_key
 from ..timeutil import Clock, iso
 from .audit import write_audit
@@ -54,35 +53,28 @@ class SystemAlias:
 def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
     clock = clock or Clock()
     limiter = RateLimiter(cfg.api.rate_limit_per_minute, clock)
-    init_db(connect(cfg.database_path))
+    pool = Pool(cfg.database)
+    with pool.connection() as conn:
+        init_db(conn)
 
     app = FastAPI(title="SEC450 log analysis API", docs_url=None, redoc_url=None, openapi_url=None)
 
-    def get_conn() -> Iterator[sqlite3.Connection]:
-        conn = connect(cfg.database_path)
-        try:
+    def get_conn() -> Iterator[Connection]:
+        with pool.connection() as conn:
             yield conn
-        finally:
-            conn.close()
 
     def _authenticate(request: Request) -> str | None:
         auth = request.headers.get("authorization", "")
         key = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("x-api-key")
         if not key:
             return None
-        conn = connect(cfg.database_path)
-        try:
+        with pool.connection() as conn:
             return lookup_key(conn, key)
-        finally:
-            conn.close()
 
     def _audit(key_id: str | None, request: Request, status: int, count: int) -> None:
-        conn = connect(cfg.database_path)
-        try:
+        with pool.connection() as conn:
             write_audit(conn, iso(clock.now()), key_id, request.method, request.url.path,
                         dict(request.query_params.multi_items()), status, count)
-        finally:
-            conn.close()
 
     @app.middleware("http")
     async def security(request: Request, call_next):
@@ -134,39 +126,39 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/v1/events")
-    def events(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    def events(request: Request, conn: Connection = Depends(get_conn)) -> dict:
         result = query_events(conn, parse_query(request.query_params, cfg.api, clock.now()))
         request.state.result_count = result["count"]
         return result
 
     @app.get("/v1/logs")
-    def logs(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    def logs(request: Request, conn: Connection = Depends(get_conn)) -> dict:
         result = query_logs(conn, parse_query(request.query_params, cfg.api, clock.now()))
         request.state.result_count = result["count"]
         return result
 
     @app.get("/v1/clusters")
-    def clusters(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    def clusters(request: Request, conn: Connection = Depends(get_conn)) -> dict:
         result = query_clusters(conn, parse_query(request.query_params, cfg.api, clock.now()))
         request.state.result_count = result["count"]
         return result
 
     @app.get("/v1/reports")
-    def reports(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    def reports(request: Request, conn: Connection = Depends(get_conn)) -> dict:
         result = query_reports(conn, parse_query(request.query_params, cfg.api, clock.now()))
         request.state.result_count = result["count"]
         return result
 
     @app.get("/v1/reports/{report_id}", response_model=None)
     def report_by_id(report_id: str, request: Request,
-                     conn: sqlite3.Connection = Depends(get_conn)) -> dict | JSONResponse:
+                     conn: Connection = Depends(get_conn)) -> dict | JSONResponse:
         # report_id is taken as text and checked here, so a bad id gets our 400 error
         # body (REQ-05) rather than FastAPI's default 422.
         if request.query_params:
             raise QueryError("this endpoint takes no parameters")
         if not re.fullmatch(r"[1-9][0-9]{0,17}", report_id):
             raise QueryError("report id must be a positive integer")
-        row = conn.execute("SELECT report_id, cluster_id, generated_at, body_json FROM report WHERE report_id = ?",
+        row = conn.execute("SELECT report_id, cluster_id, generated_at, body_json FROM report WHERE report_id = %s",
                            (int(report_id),)).fetchone()
         if row is None:
             return JSONResponse({"error": "report not found"}, status_code=404)
@@ -175,7 +167,7 @@ def create_app(cfg: Config, clock: Clock | None = None) -> FastAPI:
                 "generated_at": row["generated_at"], "body": json.loads(row["body_json"])}
 
     @app.get("/v1/integrity")
-    def integrity(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+    def integrity(request: Request, conn: Connection = Depends(get_conn)) -> dict:
         if request.query_params:
             raise QueryError("this endpoint takes no parameters")
         request.state.result_count = 1

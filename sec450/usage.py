@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 from datetime import timedelta
 
 from .config import load_config
-from .db import connect
+from .db import Connection, connect, one
 from .timeutil import Clock, iso
 
 GROUPS = {
@@ -28,9 +27,9 @@ GROUPS = {
 }
 
 
-def usage(conn: sqlite3.Connection, since: str | None = None) -> dict:
-    where, args = ("WHERE ts >= ?", [since]) if since else ("", [])
-    total, first, last = conn.execute(f"SELECT COUNT(*), MIN(ts), MAX(ts) FROM audit_entry {where}", args).fetchone()
+def usage(conn: Connection, since: str | None = None) -> dict:
+    where, args = ("WHERE ts >= %s", [since]) if since else ("", [])
+    total, first, last = one(conn.execute(f"SELECT COUNT(*), MIN(ts), MAX(ts) FROM audit_entry {where}", args))
     result: dict = {"since": since, "total": total, "first": first, "last": last}
     for name, expr in GROUPS.items():
         order = "1 DESC" if name == "day" else "2 DESC, 1"
@@ -46,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="path to config.yaml (default: $SEC450_CONFIG or ./config.yaml)")
     args = parser.parse_args(argv)
 
-    conn = connect(load_config(args.config).database_path)
+    conn = connect(load_config(args.config).database)
     since = iso(Clock().now() - timedelta(days=args.days)) if args.days > 0 else None
     result = usage(conn, since)
     if args.json:

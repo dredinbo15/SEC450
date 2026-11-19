@@ -12,7 +12,7 @@ You need Docker Desktop (or Docker Engine with Compose v2.24+). From the repo ro
 
 ```sh
 cp config.example.yaml config.yaml     # all settings (PowerShell: copy config.example.yaml config.yaml)
-cp .env.example .env                   # secrets; can stay empty while triage.client is "mock"
+cp .env.example .env                   # secrets: set POSTGRES_PASSWORD; the rest can stay empty while triage.client is "mock"
 docker compose up --build -d
 docker compose ps                      # wait until collector and api show "healthy"
 ```
@@ -84,13 +84,30 @@ With `incidents.enabled: true`, every new report whose severity is in `incidents
 
 The `api` container also serves the course's `/test` endpoints: the system at `https://seclog.redinbo.win` and the tester at `https://seclog.redinbo.win/tester`. Neither needs credentials. See [docs/testing-interface.md](docs/testing-interface.md) for the endpoints, the suite and how to check it like the graders do.
 
-## Running the tests and checks
+### Moving from SQLite
+
+Before 2026-11-18 the system kept everything in one SQLite file on the `db` volume (DD-06). `sec450.migrate_sqlite` copies that file into PostgreSQL once, keeping every id and every stored text, so both hash chains still verify and existing API keys keep working. The volume is left as it was, as a backup. With the new code checked out and `POSTGRES_PASSWORD` set in `.env`:
 
 ```sh
+docker compose stop api collector         # nothing may write while the copy runs (about 1 minute for 578,000 events)
+docker compose build collector api
+docker compose run --rm -v sec450_db:/data collector python -m sec450.migrate_sqlite /data/sec450.db
+docker compose up -d                      # starts postgres too, if it isn't already running
+docker compose exec collector python -m sec450.verify
+```
+
+The migration copies in one transaction, then compares every row with the SQLite file and verifies both chains. It prints a JSON summary and exits 1 unless everything matches. It refuses a target database that already holds data; `--replace` empties it first. The source cursors are copied too, so the collector picks up the log lines written while it was stopped.
+
+## Running the tests and checks
+
+The tests need a PostgreSQL server where they can create and drop databases. Each test gets a fresh one. The defaults match this throwaway container; to use another server, set `SEC450_TEST_DATABASE_URL`:
+
+```sh
+docker run -d --rm --name sec450-pgtest -p 127.0.0.1:55432:5432 -e POSTGRES_PASSWORD=test --tmpfs /var/lib/postgresql/data postgres:17.12-alpine -c fsync=off
 python -m venv .venv
 .venv/Scripts/activate            # macOS/Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest                            # all automated acceptance tests, about 50 s
+pytest                            # all automated acceptance tests, about 65 s
 ruff check sec450 tests docker
 mypy sec450
 bandit -c pyproject.toml -r sec450 docker
@@ -334,7 +351,7 @@ Every requirement has at least one acceptance criterion.
 | DD-03 | Synthetic Docker lab | All logs come from our own containers and traffic generator | Real servers or public datasets | Real servers raise permission and privacy questions and lack ground truth. The lab gives exact ground truth and a repeatable demo, though accuracy may look better than on real traffic. | REQ-11, REQ-12; testability, ethics |
 | DD-04 | Logs from shared folders | The collector reads each lab server's logs from a read-only shared folder | Log-shipping agents or SSH | Those are how real companies do it, but they add setup and failure points. On one machine, shared folders are the simplest option that works. | REQ-01, REQ-12; simplicity |
 | DD-05 | 60-second batches | Collect on a fixed interval, one batch per read | Stream lines continuously | Streaming is faster but complicates hash-chaining and exactly-once storage. A minute of delay fits the 5-minute detection limit. | REQ-01, REQ-03, REQ-08; simplicity, integrity |
-| DD-06 | SQLite database | One SQLite file in WAL mode, shared by the collector and API | PostgreSQL, Neo4j, Elasticsearch | The others handle concurrency or search better but each adds a service. The risk is write contention; Postgres is the fallback if lock errors appear or AC-27 fails. | REQ-08, REQ-10, REQ-12; simplicity, performance |
+| DD-06 | PostgreSQL database | One PostgreSQL 17 database (the `postgres` service, `pgdata` volume), shared by the collector and API. Timestamps stay fixed-width ISO 8601 UTC text, and the database uses the C collation, so text order is time order. Each write transaction takes an advisory lock: one for the collector's and analysis writes, a separate one for the audit chain (`sec450/db.py`). | Keep SQLite (the original choice); Neo4j, Elasticsearch | Until 2026-11-18 this was one SQLite file in WAL mode, with Postgres named as the fallback if lock errors appeared or AC-27 failed. Neither happened: AC-27 measured p95 24 ms with 100,800 events. The move was a choice, not a fix for a measured problem. It costs one more service, a password in `.env`, and about 10 ms to open a connection, so the API reuses its connections. Measured after the move: AC-27 p95 20 ms; checking the live batch chain (51,985 batches) takes 1.1 s, against 1.4 s on SQLite. The text timestamps were kept, not switched to `timestamptz`, because the hash chains cover the stored text: the migrated rows verify unchanged ("Moving from SQLite"). | REQ-08, REQ-10, REQ-12; integrity, performance |
 | DD-07 | Hash-chained batches | Each batch's SHA-256 hash includes the previous batch's hash: `SHA-256(prev_hash ‖ source ‖ collected_at ‖ SHA-256(lines))`, with `‖` written as `\|` and lines joined by `\n` (`sec450/hashchain.py`) | Digital signatures or write-once storage | Hash-chaining is simple and catches edits, deletions and reordering. Someone with full database write access could rebuild the chain; that attacker is out of scope. | REQ-08, REQ-09; integrity |
 | DD-08 | Retention moves the chain anchor | After deleting old batches, record the new starting point and verify from there | Never delete, or restart the chain | Never deleting breaks the retention rule; restarting leaves a window where tampering goes unnoticed. Moving the anchor costs one small table. | REQ-08; integrity |
 | DD-09 | Clusters freeze at triage | Once sent to the LLM, a cluster takes no new events; later matches start a linked cluster | Keep extending clusters and re-triage | Extending gives one complete picture but means repeat LLM calls and changing reports. Freezing keeps reports stable, though long attacks may split. | REQ-04, REQ-06; simplicity, cost |
@@ -344,6 +361,6 @@ Every requirement has at least one acceptance criterion.
 | DD-13 | Offline GeoIP | Local GeoLite2 lookups | An online IP-lookup API | Online is more current but adds an outside dependency and shares every IP with a third party. Offline is fast and private but slightly stale. | REQ-02; reliability, privacy |
 | DD-14 | Detect and report, never block | No automated blocking | Automatically block flagged IPs | Blocking is useful but a false alarm could cut off real traffic and adds scope. A person stays in control. | REQ-03, REQ-06; safety, scope |
 | DD-15 | Python with FastAPI | Python throughout, FastAPI for the API | Go or Node.js | Go is faster, but the whole team knows Python and FastAPI handles validation almost for free. Database indexing, not language, will decide REQ-10. | REQ-05, REQ-10, REQ-12; maintainability |
-| DD-16 | Dashboard is an API client | The Streamlit dashboard (`python -m streamlit run sec450/dashboard/app.py`) reads only through /v1 with a read-only key and flags clusters that need a person: high/critical severity, triage unavailable, or AI and rule disagreeing | Read SQLite directly from the dashboard | Direct reads would be faster and could show quarantined lines, but would bypass authentication, rate limits and the audit log. Responses are cached per refresh to stay under the rate limit. | REQ-05, REQ-09, DD-10, DD-12, DD-14; security, accountability |
+| DD-16 | Dashboard is an API client | The Streamlit dashboard (`python -m streamlit run sec450/dashboard/app.py`) reads only through /v1 with a read-only key and flags clusters that need a person: high/critical severity, triage unavailable, or AI and rule disagreeing | Read the database directly from the dashboard | Direct reads would be faster and could show quarantined lines, but would bypass authentication, rate limits and the audit log. Responses are cached per refresh to stay under the rate limit. | REQ-05, REQ-09, DD-10, DD-12, DD-14; security, accountability |
 | DD-17 | Push reports to a SIEM | The collector sends each report to Wazuh as one JSON line over TCP syslog on a private Docker network, and records delivery so an outage only delays alerts | Have the SIEM poll /v1/reports | Polling needs no new code but adds up to a poll interval of delay and another long-lived API key. Pushing is near real-time; the alert carries only triage fields and a link, so raw log lines stay behind the authenticated, audited API. | REQ-06, DD-10, DD-12; timeliness, reliability |
 | DD-18 | Post high/critical reports to the incident-management API | The collector maps each report to the API's CreateIncident shape (title, log, occurredAt, source) and records the result per report; outages are retried, rejections are not | Send the full report JSON | The API rejects extra fields, and its incident workflow (assessment, review, disclosure) needs only the summary and the raw lines; the full report stays behind the audited API, linked by the source field. | REQ-06; interoperability, reliability |

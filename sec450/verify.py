@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="path to config.yaml (default: $SEC450_CONFIG or ./config.yaml)")
     args = parser.parse_args(argv)
 
-    conn = connect(load_config(args.config).database_path)
+    conn = connect(load_config(args.config).database)
     init_db(conn)
     result = {"batches": verify_batches(conn), "audit": verify_audit(conn)}
     print(json.dumps(result, indent=2))

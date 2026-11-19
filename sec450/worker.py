@@ -10,7 +10,6 @@ tests can drive exactly what the service runs, one step at a time.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import tempfile
 import threading
 import time
@@ -18,7 +17,7 @@ from pathlib import Path
 
 from .collector import Collector
 from .config import Config, load_config
-from .db import connect, init_db
+from .db import Connection, connect, init_db
 from .detection import run_detection
 from .geoip import GeoIP
 from .incidents import forward_pending_cluster_incidents, forward_pending_incidents
@@ -49,13 +48,13 @@ def make_triage_client(cfg: Config) -> LLMClient | None:
     return ClaudeTriageClient(cfg.triage)
 
 
-def collection_cycle(collector: Collector, conn: sqlite3.Connection, cfg: Config, clock: Clock) -> None:
+def collection_cycle(collector: Collector, conn: Connection, cfg: Config, clock: Clock) -> None:
     """Read new lines from every source, then evaluate the rules (REQ-01, REQ-03)."""
     collector.run_cycle()
     run_detection(conn, cfg, clock)
 
 
-def analysis_cycle(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMClient | None) -> None:
+def analysis_cycle(conn: Connection, cfg: Config, clock: Clock, client: LLMClient | None) -> None:
     """Triage settled clusters, write reports for finished high/critical ones (REQ-04, REQ-06),
     then push new reports to the SIEM (DD-17) and the incident API (DD-18) when configured."""
     run_triage(conn, cfg, clock, client)
@@ -65,12 +64,21 @@ def analysis_cycle(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: 
     forward_pending_cluster_incidents(conn, cfg, clock)
 
 
+def reconnect_if_closed(conn: Connection, cfg: Config) -> Connection:
+    """A new connection if PostgreSQL dropped this one (restart, network); raises while it is down."""
+    if not conn.closed:
+        return conn
+    log.warning("database connection lost; reconnecting")
+    return connect(cfg.database)
+
+
 def analysis_loop(cfg: Config, clock: Clock, stop: threading.Event) -> None:
-    conn = connect(cfg.database_path)
+    conn = connect(cfg.database)
     client = make_triage_client(cfg)
     last_retention = 0.0
     while not stop.is_set():
         try:
+            conn = reconnect_if_closed(conn, cfg)
             analysis_cycle(conn, cfg, clock, client)
             if time.monotonic() - last_retention >= cfg.retention.run_every_seconds:
                 run_retention(conn, cfg, clock)
@@ -84,7 +92,7 @@ def main() -> None:
     setup_logging()
     cfg = load_config()
     clock = Clock()
-    conn = connect(cfg.database_path)
+    conn = connect(cfg.database)
     init_db(conn)
     collector = Collector(cfg, conn, clock, GeoIP.from_config(cfg.geoip))
 
@@ -96,6 +104,7 @@ def main() -> None:
         while True:
             started = time.monotonic()
             try:
+                conn = collector.conn = reconnect_if_closed(conn, cfg)
                 collection_cycle(collector, conn, cfg, clock)
                 HEARTBEAT.touch()
             except Exception:

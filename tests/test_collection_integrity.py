@@ -66,7 +66,7 @@ def test_ac21_batch_hash_matches_design_formula(conn):
     """DD-07: hash = SHA-256(prev_hash | source | collected_at | SHA-256(lines)), recomputed by hand."""
     insert_events(conn, [{}, {}], source="ssh_auth")
     b = conn.execute("SELECT * FROM batch").fetchone()
-    lines = [r[0] for r in conn.execute("SELECT text FROM raw_line WHERE batch_id = ? ORDER BY seq", (b["batch_id"],))]
+    lines = [r[0] for r in conn.execute("SELECT text FROM raw_line WHERE batch_id = %s ORDER BY seq", (b["batch_id"],))]
     lines_hash = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     expected = hashlib.sha256(f"{'0' * 64}|ssh_auth|{b['collected_at']}|{lines_hash}".encode()).hexdigest()
     assert b["prev_hash"] == "0" * 64 and b["hash"] == expected
@@ -84,12 +84,12 @@ def test_tamper_detection(conn):  # AC-21
         insert_events(conn, [{}])
     assert verify_batches(conn)["status"] == "intact"
 
-    conn.execute("DROP TRIGGER raw_line_no_update")
+    conn.execute("DROP TRIGGER raw_line_no_update ON raw_line")
     original = conn.execute("SELECT text FROM raw_line WHERE batch_id = 23").fetchone()[0]
-    conn.execute("UPDATE raw_line SET text = ? WHERE batch_id = 23", ("X" + original[1:],))
+    conn.execute("UPDATE raw_line SET text = %s WHERE batch_id = 23", ("X" + original[1:],))
     assert verify_batches(conn) == {"status": "broken", "batch_id": 23, "reason": "content hash mismatch"}
 
-    conn.execute("UPDATE raw_line SET text = ? WHERE batch_id = 23", (original,))
+    conn.execute("UPDATE raw_line SET text = %s WHERE batch_id = 23", (original,))
     conn.execute("DELETE FROM batch WHERE batch_id = 30")
     assert verify_batches(conn)["batch_id"] in (30, 31)
 
@@ -103,7 +103,7 @@ def test_ac21_verify_command(cfg, conn, tmp_path, capsys):
         insert_events(conn, [{}])
     assert verify.main(["--config", str(config_file)]) == 0
 
-    conn.execute("DROP TRIGGER raw_line_no_update")
+    conn.execute("DROP TRIGGER raw_line_no_update ON raw_line")
     conn.execute("UPDATE raw_line SET text = 'tampered' WHERE batch_id = 2")
     capsys.readouterr()
     assert verify.main(["--config", str(config_file)]) == 1
@@ -115,7 +115,7 @@ def test_retention_boundaries(cfg, conn, clock):  # AC-22
     insert_events(conn, [{"ts": "y"}], collected_at=iso(T0 - timedelta(days=29, hours=23)))
     conn.execute("INSERT INTO cluster (rule_id, severity, group_key, window_start, window_end, state, created_at) "
                  "VALUES ('R1','high','ip','a','b','REPORTED','c'), ('R1','high','ip2','a','b','REPORTED','c')")
-    conn.execute("INSERT INTO report (cluster_id, generated_at, body_json) VALUES (1, ?, '{}'), (2, ?, '{}')",
+    conn.execute("INSERT INTO report (cluster_id, generated_at, body_json) VALUES (1, %s, '{}'), (2, %s, '{}')",
                  (iso(T0 - timedelta(days=90, hours=1)), iso(T0 - timedelta(days=89, hours=23))))
     run_retention(conn, cfg, clock)
     assert [r[0] for r in conn.execute("SELECT batch_id FROM batch")] == [old + 1]

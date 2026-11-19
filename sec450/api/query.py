@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from starlette.datastructures import QueryParams
 
 from ..config import SEVERITY_ORDER, ApiConfig
+from ..db import Connection
 from ..redact import redact_text
 from ..reports import overlapping_gaps
 from ..timeutil import iso, parse_iso
@@ -82,7 +82,7 @@ def parse_query(params: QueryParams, cfg: ApiConfig, now: datetime) -> Query:
     return Query(iso(start), iso(end), source_ip, params.get("user"), severity, limit)
 
 
-def _envelope(conn: sqlite3.Connection, q: Query, key: str, items: list) -> dict:
+def _envelope(conn: Connection, q: Query, key: str, items: list) -> dict:
     return {
         "query": {"start": q.start, "end": q.end, "source_ip": q.source_ip, "user": q.user,
                   "severity": q.severity, "limit": q.limit},
@@ -92,20 +92,20 @@ def _envelope(conn: sqlite3.Connection, q: Query, key: str, items: list) -> dict
     }
 
 
-def query_events(conn: sqlite3.Connection, q: Query) -> dict:
-    sql = ["SELECT * FROM event e WHERE e.ts >= ? AND e.ts <= ?"]
+def query_events(conn: Connection, q: Query) -> dict:
+    sql = ["SELECT * FROM event e WHERE e.ts >= %s AND e.ts <= %s"]
     args: list = [q.start, q.end]
     if q.source_ip:
-        sql.append("AND e.client_ip = ?")
+        sql.append("AND e.client_ip = %s")
         args.append(q.source_ip)
     if q.user:
-        sql.append("AND e.username = ?")
+        sql.append("AND e.username = %s")
         args.append(q.user)
     if q.severity:
         sql.append("AND EXISTS (SELECT 1 FROM cluster_event ce JOIN cluster c USING (cluster_id) "
-                   "WHERE ce.event_id = e.event_id AND c.severity = ?)")
+                   "WHERE ce.event_id = e.event_id AND c.severity = %s)")
         args.append(q.severity)
-    sql.append("ORDER BY e.ts DESC, e.event_id DESC LIMIT ?")
+    sql.append("ORDER BY e.ts DESC, e.event_id DESC LIMIT %s")
     args.append(q.limit)
     rows = [dict(r) for r in conn.execute(" ".join(sql), args)]
     for r in rows:
@@ -113,22 +113,22 @@ def query_events(conn: sqlite3.Connection, q: Query) -> dict:
     return _envelope(conn, q, "events", rows)
 
 
-def query_logs(conn: sqlite3.Connection, q: Query) -> dict:
+def query_logs(conn: Connection, q: Query) -> dict:
     """The raw log lines behind events, with credentials masked (redact_text) before they leave."""
     sql = ["SELECT e.event_id, e.raw_id, e.ts, e.source, e.host, e.client_ip, e.username, r.text "
-           "FROM event e JOIN raw_line r USING (raw_id) WHERE e.ts >= ? AND e.ts <= ?"]
+           "FROM event e JOIN raw_line r USING (raw_id) WHERE e.ts >= %s AND e.ts <= %s"]
     args: list = [q.start, q.end]
     if q.source_ip:
-        sql.append("AND e.client_ip = ?")
+        sql.append("AND e.client_ip = %s")
         args.append(q.source_ip)
     if q.user:
-        sql.append("AND e.username = ?")
+        sql.append("AND e.username = %s")
         args.append(q.user)
     if q.severity:
         sql.append("AND EXISTS (SELECT 1 FROM cluster_event ce JOIN cluster c USING (cluster_id) "
-                   "WHERE ce.event_id = e.event_id AND c.severity = ?)")
+                   "WHERE ce.event_id = e.event_id AND c.severity = %s)")
         args.append(q.severity)
-    sql.append("ORDER BY e.ts DESC, e.event_id DESC LIMIT ?")
+    sql.append("ORDER BY e.ts DESC, e.event_id DESC LIMIT %s")
     args.append(q.limit)
     rows = [dict(r) for r in conn.execute(" ".join(sql), args)]
     for r in rows:
@@ -137,26 +137,26 @@ def query_logs(conn: sqlite3.Connection, q: Query) -> dict:
 
 
 def _cluster_filters(q: Query) -> tuple[str, list]:
-    sql = ["c.window_start <= ? AND c.window_end >= ?"]
+    sql = ["c.window_start <= %s AND c.window_end >= %s"]
     args: list = [q.end, q.start]
     if q.source_ip:
-        sql.append("AND c.group_key = ?")
+        sql.append("AND c.group_key = %s")
         args.append(q.source_ip)
     if q.user:
         sql.append("AND EXISTS (SELECT 1 FROM cluster_event ce JOIN event e USING (event_id) "
-                   "WHERE ce.cluster_id = c.cluster_id AND e.username = ?)")
+                   "WHERE ce.cluster_id = c.cluster_id AND e.username = %s)")
         args.append(q.user)
     if q.severity:
-        sql.append("AND c.severity = ?")
+        sql.append("AND c.severity = %s")
         args.append(q.severity)
     return " ".join(sql), args
 
 
-def query_clusters(conn: sqlite3.Connection, q: Query) -> dict:
+def query_clusters(conn: Connection, q: Query) -> dict:
     where, args = _cluster_filters(q)
     rows = conn.execute(
         f"SELECT c.*, (SELECT COUNT(*) FROM cluster_event ce WHERE ce.cluster_id = c.cluster_id) AS event_count "
-        f"FROM cluster c WHERE {where} ORDER BY c.window_end DESC, c.cluster_id DESC LIMIT ?",
+        f"FROM cluster c WHERE {where} ORDER BY c.window_end DESC, c.cluster_id DESC LIMIT %s",
         [*args, q.limit]).fetchall()
     items = []
     for r in rows:
@@ -170,11 +170,11 @@ def query_clusters(conn: sqlite3.Connection, q: Query) -> dict:
     return _envelope(conn, q, "clusters", items)
 
 
-def query_reports(conn: sqlite3.Connection, q: Query) -> dict:
+def query_reports(conn: Connection, q: Query) -> dict:
     where, args = _cluster_filters(q)
     rows = conn.execute(
         f"SELECT r.report_id, r.cluster_id, r.generated_at, r.body_json FROM report r "
-        f"JOIN cluster c USING (cluster_id) WHERE {where} ORDER BY r.generated_at DESC LIMIT ?",
+        f"JOIN cluster c USING (cluster_id) WHERE {where} ORDER BY r.generated_at DESC LIMIT %s",
         [*args, q.limit]).fetchall()
     items = [{"report_id": r["report_id"], "cluster_id": r["cluster_id"],
               "generated_at": r["generated_at"], "body": json.loads(r["body_json"])} for r in rows]

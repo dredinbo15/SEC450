@@ -16,7 +16,7 @@ from datetime import timedelta
 from fastapi.testclient import TestClient
 
 from sec450 import hashchain
-from sec450.db import transaction
+from sec450.db import copy_rows, transaction
 from sec450.keys import create_key
 from sec450.timeutil import iso
 
@@ -80,16 +80,16 @@ def seed_store(conn, rng: random.Random) -> tuple[list[str], list[str]]:
                         body = {"summary": f"{rule} {severity} from {attacker}", "requester": {"client_ip": attacker},
                                 "raw_log_lines": lines[:12], "timeline": [t for _, t in ids]}
                         reports.append((cluster_id, iso(collected + timedelta(minutes=3)), json.dumps(body)))
-        c.executemany("INSERT INTO batch VALUES (?, ?, ?, ?, ?, ?)", batches)
-        c.executemany("INSERT INTO raw_line (raw_id, batch_id, seq, text, status) VALUES (?, ?, ?, ?, 'parsed')",
-                      raws)
-        c.executemany("INSERT INTO event (event_id, raw_id, ts, source, host, client_ip, username, action, target, "
-                      "outcome, status_code, bytes_sent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", events)
-        c.executemany("INSERT INTO cluster (cluster_id, rule_id, severity, group_key, window_start, window_end, "
-                      "state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", clusters)
-        c.executemany("INSERT INTO cluster_event (cluster_id, event_id) VALUES (?, ?)", members)
-        c.executemany("INSERT INTO report (cluster_id, generated_at, body_json) VALUES (?, ?, ?)", reports)
-        c.execute("INSERT INTO gap (source, start, \"end\", reason) VALUES ('ssh_auth', ?, ?, 'unreadable')",
+        copy_rows(c, "batch", ("batch_id", "source", "collected_at", "line_count", "prev_hash", "hash"), batches)
+        copy_rows(c, "raw_line", ("raw_id", "batch_id", "seq", "text", "status"),
+                  (r + ("parsed",) for r in raws))
+        copy_rows(c, "event", ("event_id", "raw_id", "ts", "source", "host", "client_ip", "username", "action",
+                               "target", "outcome", "status_code", "bytes_sent"), events)
+        copy_rows(c, "cluster", ("cluster_id", "rule_id", "severity", "group_key", "window_start", "window_end",
+                                 "state", "created_at"), clusters)
+        copy_rows(c, "cluster_event", ("cluster_id", "event_id"), members)
+        copy_rows(c, "report", ("cluster_id", "generated_at", "body_json"), reports)
+        c.execute("INSERT INTO gap (source, start, \"end\", reason) VALUES ('ssh_auth', %s, %s, 'unreadable')",
                   (iso(T0 - timedelta(days=3)), iso(T0 - timedelta(days=3) + timedelta(minutes=5))))
     conn.execute("ANALYZE")
     return ips, users

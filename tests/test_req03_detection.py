@@ -153,7 +153,7 @@ def test_ac07_detection_latency(cfg, conn, clock, rule_id, events, run_number):
         FROM cluster cl
         JOIN cluster_event ce USING (cluster_id)
         JOIN event e USING (event_id)
-        WHERE cl.rule_id = ?
+        WHERE cl.rule_id = %s
         GROUP BY cl.cluster_id
         ORDER BY cl.cluster_id DESC
         LIMIT 1

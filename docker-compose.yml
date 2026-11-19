@@ -1,7 +1,7 @@
 # SEC450: lab servers, traffic generator, collector and API (REQ-12).
 #
 #   cp config.example.yaml config.yaml
-#   cp .env.example .env          # optional; only needed for real Claude triage
+#   cp .env.example .env          # set POSTGRES_PASSWORD; ANTHROPIC_API_KEY only for real Claude triage
 #   docker compose up --build
 #
 # Only the api publishes a port (DD-10): https://localhost/ (host 443 -> container 8443).
@@ -21,6 +21,25 @@ x-app: &app
       required: false
 
 services:
+  # The one database, shared by the collector and the api (DD-06). No port is published:
+  # only containers on the compose network reach it. --locale=C makes text compare byte by
+  # byte, so the ISO timestamps the schema stores sort in time order (sec450/db.py).
+  postgres:
+    image: postgres:17.12-alpine
+    environment:
+      POSTGRES_DB: sec450                 # database.name / database.user in config.yaml
+      POSTGRES_USER: sec450
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "sec450", "-d", "sec450"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   lab-ssh:
     build: docker/lab-ssh
     hostname: ssh01                       # matches sources[ssh_auth].host in config.yaml
@@ -83,9 +102,11 @@ services:
   collector:
     <<: *app
     command: ["python", "-m", "sec450.worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - db:/data                          # the one SQLite file, shared with the api (DD-06)
       - ssh-logs:/logs/ssh:ro             # read-only: the collector never changes a log (DD-04, REQ-08)
       - nginx-logs:/logs/nginx:ro
       - app-logs:/logs/app:ro
@@ -107,9 +128,10 @@ services:
       - "443:8443"                        # container side must match api.port in config.yaml
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - db:/data
       - certs:/certs
     depends_on:
+      postgres:
+        condition: service_healthy
       collector:
         condition: service_started
     healthcheck:
@@ -194,5 +216,6 @@ volumes:
   ssh-logs:
   nginx-logs:
   app-logs:
-  db:
+  pgdata:
+  db:            # the SQLite file from before PostgreSQL; only sec450.migrate_sqlite reads it (README.md)
   certs:

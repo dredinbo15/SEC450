@@ -75,7 +75,9 @@ def test_audit_chain_and_fail_closed(api, conn):  # AC-26
     assert statuses == [200, 400, 401]
     assert verify_audit(conn)["status"] == "intact"
 
-    conn.execute("CREATE TRIGGER block_audit BEFORE INSERT ON audit_entry BEGIN SELECT RAISE(ABORT, 'no'); END")
+    conn.execute("CREATE FUNCTION block_audit() RETURNS trigger LANGUAGE plpgsql "
+                 "AS $$ BEGIN RAISE EXCEPTION 'no'; END $$")
+    conn.execute("CREATE TRIGGER block_audit BEFORE INSERT ON audit_entry FOR EACH ROW EXECUTE FUNCTION block_audit()")
     r = client.get("/v1/events")
     assert r.status_code == 500 and "events" not in r.json()
 

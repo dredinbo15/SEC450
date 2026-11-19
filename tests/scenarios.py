@@ -254,7 +254,7 @@ def play(traffic: LabTraffic, cfg: Config, conn, clock: FixedClock, until: datet
 
 
 def first_cluster(conn, attack: Attack):
-    return conn.execute("SELECT cluster_id, created_at FROM cluster WHERE rule_id = ? AND group_key = ? "
+    return conn.execute("SELECT cluster_id, created_at FROM cluster WHERE rule_id = %s AND group_key = %s "
                         "ORDER BY created_at, cluster_id LIMIT 1", (attack.rule, attack.ip)).fetchone()
 
 

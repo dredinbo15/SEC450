@@ -30,7 +30,7 @@ def test_named_secrets_redacted():
 
 def _make_cluster(conn, severity):
     conn.execute("INSERT INTO cluster (rule_id, severity, group_key, window_start, window_end, state, created_at) "
-                 "VALUES ('R1', ?, '203.0.113.5', ?, ?, 'FLAGGED', ?)", (severity, at(0), at(0), at(0)))
+                 "VALUES ('R1', %s, '203.0.113.5', %s, %s, 'FLAGGED', %s)", (severity, at(0), at(0), at(0)))
 
 
 def _states(conn) -> list[tuple]:

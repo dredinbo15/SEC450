@@ -1,6 +1,6 @@
 # Acceptance criteria status
 
-Status of AC-01 to AC-30 from the [README](../README.md#acceptance-criteria), as of 2026-10-31. Automated criteria run in CI on every push (`pytest`). The manual steps need team members. Each section below gives its procedure and a table to fill in.
+Status of AC-01 to AC-30 from the [README](../README.md#acceptance-criteria), as of 2026-10-31; AC-20, AC-21, AC-22 and AC-27 were rerun on PostgreSQL on 2026-11-18 (DD-06). Automated criteria run in CI on every push (`pytest`), against a PostgreSQL service container. The manual steps need team members. Each section below gives its procedure and a table to fill in.
 
 | AC | Method | Status | Evidence |
 |----|--------|--------|----------|
@@ -24,13 +24,13 @@ Status of AC-01 to AC-30 from the [README](../README.md#acceptance-criteria), as
 | AC-18 | Test, Auto | Pass | `test_collection_integrity.py::test_gap_opens_after_retries_and_closes` |
 | AC-19 | Test, Auto | Pass | `test_collection_integrity.py::test_clock_anomaly_boundary` |
 | AC-20 | Inspection + Test | Test passes; inspection done, sign-off pending | `test_raw_line_update_rejected`; [inspection](#ac-20-raw-lines-immutable) |
-| AC-21 | Test, Auto | Pass | `test_collection_integrity.py::test_tamper_detection` |
-| AC-22 | Test, Auto | Pass | `test_collection_integrity.py::test_retention_boundaries` |
+| AC-21 | Test, Auto | Pass (PostgreSQL, 2026-11-18) | `test_collection_integrity.py::test_tamper_detection`; the migrated live database verifies intact: [migration](#migration-to-postgresql) |
+| AC-22 | Test, Auto | Pass (PostgreSQL, 2026-11-18) | `test_collection_integrity.py::test_retention_boundaries` |
 | AC-23 | Test, Auto | Pass | `test_req09_tls.py::test_tls_enforcement` |
 | AC-24 | Test + Inspection | Test passes; inspection done, sign-off pending | `test_api.py::test_auth`; [inspection](#ac-24-key-storage) |
 | AC-25 | Test, Auto | Pass | `test_api.py::test_rate_limit` |
 | AC-26 | Test, Auto | Pass | `test_api.py::test_audit_chain_and_fail_closed` |
-| AC-27 | Test + Analysis | Test passes; outlier review pending | `test_req10_performance.py::test_query_performance`: p95 24 ms; [analysis](#ac-27-and-ac-28-analysis) |
+| AC-27 | Test + Analysis | Test passes; outlier review pending | `test_req10_performance.py::test_query_performance`: p95 20 ms on PostgreSQL (24 ms on SQLite); [analysis](#ac-27-and-ac-28-analysis) |
 | AC-28 | Test + Analysis | Test passes; analysis pending | `test_req11_accuracy.py::test_detection_accuracy`: 3 seeds, 28/28 detected, 0 false alarms; [analysis](#ac-27-and-ac-28-analysis) |
 | AC-29 | Demonstration, Manual | Pending: needs a teammate on a clean machine | [procedure](#ac-29-clean-clone-startup) |
 | AC-30 | Inspection, Manual | Inspection done, one fix made, sign-off pending | [inspection](#ac-30-single-configuration-file) |
@@ -98,6 +98,12 @@ pytest -s tests/test_req10_performance.py tests/test_req11_accuracy.py
 
 AC-27 prints p50, p95 and max, plus the 5 slowest queries for the outlier review. AC-28 prints each attack's ground-truth line and a per-seed score. Results on 2026-10-31 on a 4-core, 8 GB host: p95 24 ms, max 73 ms, with `/v1/logs?limit=1000` the slowest kind of query. Each of seeds 1, 2 and 3 gave 28/28 detected and 0/28 false alarms.
 
+AC-27 rerun on PostgreSQL on 2026-11-18, same host and seed (four runs): p50 8 to 9 ms, p95 20 to 21 ms, max 47 to 69 ms. `/v1/logs?limit=1000` is still the slowest kind of query, at 47 to 60 ms. The seed now loads with COPY; the queries, the 100,800 events and the full `/v1` stack are unchanged. Before the API reused its connections, p95 was 69 ms, because each request opened three new connections (~11 ms each).
+
+### Migration to PostgreSQL
+
+On 2026-11-18, a dry run of `python -m sec450.migrate_sqlite` copied a snapshot of the live SQLite database. It held 51,985 batches, 578,019 raw lines and events, 2,431 clusters, 2,023 reports, 24 API keys and 16,145 audit entries. All 17 tables compared row for row with the source, and both chains verified intact on PostgreSQL. The copy took 43 s and the checks 10 s. A new audit entry written after the copy continued both the id sequence and the chain.
+
 Limits to note in the analysis: the scenario set is synthetic (DD-03), so accuracy on real traffic would likely be lower. The live `traffic-gen` sends everything from one container address, so its `ground_truth` lines can't be scored per address the way the test scores them.
 
 ## Inspections
@@ -106,7 +112,7 @@ These were done on 2026-10-31 as input for the team's sign-off.
 
 ### AC-20 Raw lines immutable
 
-No code path in `sec450/` runs `UPDATE` or `INSERT OR REPLACE` on `raw_line`. The only writes are the `INSERT` in `collector.py` and the cascading `DELETE` from retention (REQ-08). The `raw_line_no_update` trigger in `db.py` rejects any `UPDATE`, and `test_raw_line_update_rejected` checks it.
+No code path in `sec450/` runs `UPDATE`, or an upsert (`INSERT ... ON CONFLICT`), on `raw_line`. The only writes are the `INSERT` in `collector.py`, the cascading `DELETE` from retention (REQ-08), and the one-time `COPY` in `migrate_sqlite.py`. The `raw_line_no_update` trigger in `db.py` (PL/pgSQL since 2026-11-18) rejects any `UPDATE`, and `test_raw_line_update_rejected` checks it.
 
 ### AC-24 Key storage
 
@@ -114,7 +120,7 @@ No code path in `sec450/` runs `UPDATE` or `INSERT OR REPLACE` on `raw_line`. Th
 
 ### AC-30 Single configuration file
 
-All application settings come from `config.yaml` through `sec450.config.load_config()`. `SEC450_CONFIG` picks the file. Secrets come from `.env` by design: `ANTHROPIC_API_KEY`, and the dashboard's key as `SEC450_API_KEY`.
+All application settings come from `config.yaml` through `sec450.config.load_config()`. `SEC450_CONFIG` picks the file. Secrets come from `.env` by design: `ANTHROPIC_API_KEY`, `POSTGRES_PASSWORD`, and the dashboard's key as `SEC450_API_KEY`. The `database` section of `config.yaml` names the variable that holds the password (`database.password_env`).
 
 Fixed in this pass: the api healthcheck in `docker-compose.yml` hard-coded port 8443. It now reads `api.port` from `config.yaml`.
 
@@ -127,6 +133,7 @@ Compose and lab values that must match `config.yaml` but can't read it, because 
 | `172.20.0.10`, `172.20.0.0/24` | `docker-compose.yml` (lab-nginx, lab network) | `collector.trusted_proxies` |
 | Hostnames `ssh01`, `web01`, `app01`; `TZ` | `docker-compose.yml` (lab servers) | `sources[].host`, `sources[].timezone` |
 | Port `8501` | `docker-compose.yml` (dashboard), `docker/cloudflared/dashboard.yml` | Streamlit command line (not in `config.yaml`) |
+| `POSTGRES_DB`/`POSTGRES_USER` `sec450`, host `postgres` | `docker-compose.yml` (postgres) | `database.name`, `database.user`, `database.host` |
 | Tunnel IDs, `COMPOSE_PROFILES`, `DASHBOARD_PUBLIC_ORIGIN` | `.env` | Compose-level options, not application settings |
 
 For sign-off, the team should either accept these as documented exceptions or narrow AC-30 to "every application setting".

@@ -1,17 +1,18 @@
 """REQ-01: collect every source on an interval and parse into the event schema in UTC."""
 import ipaddress
 import json
-import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import psycopg
 import pytest
 import yaml
 from pydantic import ValidationError
 
 from sec450.collector import Collector
 from sec450.config import Config
+from sec450.db import in_transaction
 from sec450.geoip import GeoIP
 from sec450.hashchain import verify_batches
 from sec450.models import ParsedEvent
@@ -192,7 +193,6 @@ def test_fall_back_hour_is_first_occurrence():  # AC-02 boundary
 
 def _cfg_data(tmp_path: Path) -> dict:
     data = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
-    data["database_path"] = str(tmp_path / "test.db")
     for src in data["sources"]:
         src["path"] = str(tmp_path / f"{src['name']}.log")
     return data
@@ -244,9 +244,9 @@ def test_one_cycle_collects_every_source(cfg, conn, clock):  # AC-01
 # --- AC-03: a failed commit loses and duplicates nothing ------------------------------------
 
 class FailingBatchCommit:
-    """Connection proxy whose COMMIT of the nth batch fails, like SQLITE_BUSY on commit."""
+    """Connection proxy whose COMMIT of the nth batch fails, like a lost connection or serialization failure."""
 
-    def __init__(self, conn: sqlite3.Connection, fail_on_batch: int = 1):
+    def __init__(self, conn, fail_on_batch: int = 1):
         self._conn = conn
         self._fail_on = fail_on_batch
         self._batches = 0
@@ -257,7 +257,7 @@ class FailingBatchCommit:
             self._batches += 1
         if sql == "COMMIT" and self._batches == self._fail_on and not self.failed:
             self.failed = True
-            raise sqlite3.OperationalError("database is locked")
+            raise psycopg.OperationalError("server closed the connection unexpectedly")
         return self._conn.execute(sql, *args)
 
     def __getattr__(self, name):
@@ -282,9 +282,9 @@ def test_no_loss_or_duplication(cfg, conn, clock, fail_commit):  # AC-03
                 path.replace(path.with_name(path.name + ".1"))  # create-style rotation (logrotate + USR1)
         clock.advance(60)
         if fail_commit and cycle == 3:
-            with pytest.raises(sqlite3.OperationalError):
+            with pytest.raises(psycopg.OperationalError):
                 collector.collect_source(src)
-            assert not conn.in_transaction
+            assert not in_transaction(conn)
         else:
             collector.collect_source(src)
 
@@ -359,7 +359,7 @@ def test_unstorable_value_is_quarantined(cfg, conn, clock):
     Collector(cfg, conn, clock, GeoIP()).collect_source(src)
     assert conn.execute("SELECT COUNT(*) FROM event").fetchone()[0] == 1
     (why,), = conn.execute("SELECT quarantine_reason FROM raw_line WHERE status = 'quarantined'")
-    assert why.startswith("unstorable event: OverflowError")
+    assert why == "unstorable event: NumericValueOutOfRange: bigint out of range"
     assert verify_batches(conn)["status"] == "intact"
 
 

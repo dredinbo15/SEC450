@@ -11,11 +11,10 @@ from __future__ import annotations
 import json
 import logging
 import socket
-import sqlite3
 from collections.abc import Callable
 
 from .config import Config, SiemConfig
-from .db import transaction
+from .db import Connection, transaction
 from .timeutil import Clock, iso
 
 log = logging.getLogger(__name__)
@@ -62,7 +61,7 @@ def tcp_syslog_send(cfg: SiemConfig, lines: list[bytes]) -> None:
         sock.sendall(b"".join(line + b"\n" for line in lines))
 
 
-def forward_pending_reports(conn: sqlite3.Connection, cfg: Config, clock: Clock,
+def forward_pending_reports(conn: Connection, cfg: Config, clock: Clock,
                             send: Sender = tcp_syslog_send) -> list[int]:
     """Send reports the SIEM has not received yet; returns the ids delivered this cycle."""
     if not cfg.siem.enabled:
@@ -70,7 +69,7 @@ def forward_pending_reports(conn: sqlite3.Connection, cfg: Config, clock: Clock,
     rows = conn.execute(
         "SELECT r.report_id, r.generated_at, r.body_json FROM report r "
         "LEFT JOIN siem_delivery d USING (report_id) WHERE d.report_id IS NULL "
-        "ORDER BY r.report_id LIMIT ?", (cfg.siem.batch_size,)).fetchall()
+        "ORDER BY r.report_id LIMIT %s", (cfg.siem.batch_size,)).fetchall()
     if not rows:
         return []
     lines = [json.dumps(build_alert(r["report_id"], r["generated_at"], json.loads(r["body_json"]), cfg.siem),
@@ -84,7 +83,7 @@ def forward_pending_reports(conn: sqlite3.Connection, cfg: Config, clock: Clock,
     ids = [r["report_id"] for r in rows]
     now = iso(clock.now())
     with transaction(conn) as c:
-        c.executemany("INSERT OR IGNORE INTO siem_delivery (report_id, delivered_at) VALUES (?, ?)",
-                      [(i, now) for i in ids])
+        c.cursor().executemany("INSERT INTO siem_delivery (report_id, delivered_at) VALUES (%s, %s) "
+                               "ON CONFLICT DO NOTHING", [(i, now) for i in ids])
     log.info("forwarded %d reports to the SIEM", len(ids), extra={"report_id": ids[-1]})
     return ids

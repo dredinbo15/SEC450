@@ -20,13 +20,12 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from collections.abc import Callable
 
 import httpx
 
 from .config import Config, IncidentsConfig
-from .db import transaction
+from .db import Connection, Row, transaction
 from .timeutil import Clock, iso
 
 log = logging.getLogger(__name__)
@@ -49,12 +48,12 @@ def http_post(cfg: IncidentsConfig, incident: dict) -> httpx.Response:
     return httpx.post(cfg.url, json=incident, timeout=cfg.timeout_seconds)
 
 
-def build_cluster_incident(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) -> dict:
+def build_cluster_incident(conn: Connection, cluster: Row, cfg: Config) -> dict:
     """For a cluster without a report (medium): the same summary style as reports.py."""
     rule = next((r for r in cfg.detection.rules if r.id == cluster["rule_id"]), None)
     rows = conn.execute(
         "SELECT e.ts, r.text FROM cluster_event ce JOIN event e USING (event_id) JOIN raw_line r USING (raw_id) "
-        "WHERE ce.cluster_id = ? ORDER BY e.ts, e.event_id", (cluster["cluster_id"],)).fetchall()
+        "WHERE ce.cluster_id = %s ORDER BY e.ts, e.event_id", (cluster["cluster_id"],)).fetchall()
     summary = (f"{rule.name if rule else cluster['rule_id']} ({cluster['severity']}): {len(rows)} events from "
                f"{cluster['group_key']} between {cluster['window_start']} and {cluster['window_end']}")
     return {
@@ -68,15 +67,17 @@ def build_cluster_incident(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: 
 _TABLES = {"report": ("incident_delivery", "report_id"), "cluster": ("incident_cluster_delivery", "cluster_id")}
 
 
-def _record(conn: sqlite3.Connection, kind: str, key: int, status: str, now: str,
+def _record(conn: Connection, kind: str, key: int, status: str, now: str,
             incident_id: str | None = None, detail: str | None = None) -> None:
     table, col = _TABLES[kind]
     with transaction(conn) as c:
-        c.execute(f"INSERT OR REPLACE INTO {table} ({col}, status, incident_id, detail, handled_at) "  # noqa: S608  # nosec B608 - fixed names
-                  "VALUES (?, ?, ?, ?, ?)", (key, status, incident_id, detail, now))
+        c.execute(f"INSERT INTO {table} ({col}, status, incident_id, detail, handled_at) "  # noqa: S608  # nosec B608 - fixed names
+                  f"VALUES (%s, %s, %s, %s, %s) ON CONFLICT ({col}) DO UPDATE SET status = excluded.status, "
+                  "incident_id = excluded.incident_id, detail = excluded.detail, handled_at = excluded.handled_at",
+                  (key, status, incident_id, detail, now))
 
 
-def _deliver(conn: sqlite3.Connection, icfg: IncidentsConfig, kind: str, key: int, incident: dict,
+def _deliver(conn: Connection, icfg: IncidentsConfig, kind: str, key: int, incident: dict,
              now: str, post: Poster) -> str:
     """Post one incident and record the outcome: 'sent', 'rejected', or 'retry' (nothing recorded)."""
     extra = {f"{kind}_id": key}
@@ -104,7 +105,7 @@ def _deliver(conn: sqlite3.Connection, icfg: IncidentsConfig, kind: str, key: in
     return "sent"
 
 
-def forward_pending_incidents(conn: sqlite3.Connection, cfg: Config, clock: Clock,
+def forward_pending_incidents(conn: Connection, cfg: Config, clock: Clock,
                               post: Poster = http_post) -> list[int]:
     """Send reports not handled yet; returns the report ids sent this cycle."""
     icfg = cfg.incidents
@@ -114,10 +115,11 @@ def forward_pending_incidents(conn: sqlite3.Connection, cfg: Config, clock: Cloc
     if conn.execute("SELECT 1 FROM incident_forwarding").fetchone() is None:
         # First run ever. Without backfill, everything that already exists is history, not new incidents.
         with transaction(conn) as c:
-            c.execute("INSERT INTO incident_forwarding (id, enabled_at) VALUES (1, ?)", (now,))
+            c.execute("INSERT INTO incident_forwarding (id, enabled_at) VALUES (1, %s)", (now,))
             n = 0 if icfg.backfill else c.execute(
-                "INSERT OR IGNORE INTO incident_delivery (report_id, status, detail, handled_at) "
-                "SELECT report_id, 'skipped', 'existed before forwarding was enabled', ? FROM report",
+                "INSERT INTO incident_delivery (report_id, status, detail, handled_at) "
+                "SELECT report_id, 'skipped', 'existed before forwarding was enabled', %s FROM report "
+                "ON CONFLICT DO NOTHING",
                 (now,)).rowcount
         log.info("incident forwarding enabled; %d existing reports will not be sent", n)
         if n:
@@ -125,7 +127,7 @@ def forward_pending_incidents(conn: sqlite3.Connection, cfg: Config, clock: Cloc
 
     rows = conn.execute(
         "SELECT r.report_id, r.body_json FROM report r LEFT JOIN incident_delivery d USING (report_id) "
-        "WHERE d.report_id IS NULL ORDER BY r.report_id LIMIT ?", (icfg.batch_size,)).fetchall()
+        "WHERE d.report_id IS NULL ORDER BY r.report_id LIMIT %s", (icfg.batch_size,)).fetchall()
     sent: list[int] = []
     for r in rows:
         body = json.loads(r["body_json"])
@@ -141,7 +143,7 @@ def forward_pending_incidents(conn: sqlite3.Connection, cfg: Config, clock: Cloc
     return sent
 
 
-def forward_pending_cluster_incidents(conn: sqlite3.Connection, cfg: Config, clock: Clock,
+def forward_pending_cluster_incidents(conn: Connection, cfg: Config, clock: Clock,
                                       post: Poster = http_post) -> list[int]:
     """Send finished clusters that have no report (medium) when their severity is forwarded."""
     icfg = cfg.incidents
@@ -152,8 +154,8 @@ def forward_pending_cluster_incidents(conn: sqlite3.Connection, cfg: Config, clo
     since = "" if icfg.backfill else started["enabled_at"]
     rows = conn.execute(
         f"SELECT c.* FROM cluster c LEFT JOIN incident_cluster_delivery d USING (cluster_id) "
-        f"WHERE d.cluster_id IS NULL AND c.state = 'DONE' AND c.created_at >= ? "
-        f"AND c.severity IN ({','.join('?' * len(wanted))}) ORDER BY c.cluster_id LIMIT ?",  # noqa: S608  # nosec B608 - placeholders only
+        f"WHERE d.cluster_id IS NULL AND c.state = 'DONE' AND c.created_at >= %s "
+        f"AND c.severity IN ({', '.join(['%s'] * len(wanted))}) ORDER BY c.cluster_id LIMIT %s",  # noqa: S608  # nosec B608 - placeholders only
         [since, *wanted, icfg.batch_size]).fetchall()
     now = iso(clock.now())
     sent: list[int] = []

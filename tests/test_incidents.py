@@ -94,8 +94,8 @@ def _medium_cluster(conn, created_at="2026-10-08T14:05:00.000000Z"):
                           "outcome": "failure"} for i in range(3)])
     cid = conn.execute("INSERT INTO cluster (rule_id, severity, group_key, window_start, window_end, state, "
                        "created_at) VALUES ('R2', 'medium', '203.0.113.5', '2026-10-08T14:00:00.000000Z', "
-                       "'2026-10-08T14:00:02.000000Z', 'DONE', ?)", (created_at,)).lastrowid
-    conn.execute("INSERT INTO cluster_event (cluster_id, event_id) SELECT ?, event_id FROM event", (cid,))
+                       "'2026-10-08T14:00:02.000000Z', 'DONE', %s) RETURNING cluster_id", (created_at,)).fetchone()[0]
+    conn.execute("INSERT INTO cluster_event (cluster_id, event_id) SELECT %s, event_id FROM event", (cid,))
     return cid
 
 

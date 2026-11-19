@@ -1,8 +1,13 @@
 # SEC450 log analysis - single configuration file (REQ-12, AC-30).
 # Copy to config.yaml. Paths below are paths INSIDE the containers (see docker-compose.yml).
-# Secrets do not go here: put ANTHROPIC_API_KEY in .env.
+# Secrets do not go here: put ANTHROPIC_API_KEY and POSTGRES_PASSWORD in .env.
 
-database_path: /data/sec450.db
+database:                       # PostgreSQL (DD-06); the postgres service in docker-compose.yml
+  host: postgres
+  port: 5432
+  name: sec450
+  user: sec450
+  password_env: POSTGRES_PASSWORD   # name of the environment variable holding the password
 
 sources:
   - name: nginx_access

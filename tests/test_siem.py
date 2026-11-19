@@ -119,8 +119,9 @@ def test_batches_and_retention_cleanup(siem_cfg, conn, clock):
     for i in range(2):                              # two more reports for copies of the cluster
         cid = conn.execute("INSERT INTO cluster (rule_id, severity, group_key, window_start, window_end, state, "
                            "created_at) SELECT rule_id, severity, group_key, window_start, window_end, state, "
-                           "created_at FROM cluster WHERE cluster_id = ?", (cluster_id,)).lastrowid
-        conn.execute("INSERT INTO report (cluster_id, generated_at, body_json) VALUES (?, ?, ?)",
+                           "created_at FROM cluster WHERE cluster_id = %s RETURNING cluster_id",
+                           (cluster_id,)).fetchone()[0]
+        conn.execute("INSERT INTO report (cluster_id, generated_at, body_json) VALUES (%s, %s, %s)",
                      (cid, f"2026-10-08T15:0{i}:00.000000Z", body))
 
     siem_cfg.siem.batch_size = 2
@@ -130,5 +131,5 @@ def test_batches_and_retention_cleanup(siem_cfg, conn, clock):
     second = forward_pending_reports(conn, siem_cfg, clock, send=send)
     assert batches == [2, 1] and len(set(first + second)) == 3
 
-    conn.execute("DELETE FROM report WHERE report_id = ?", (first[0],))   # what retention does
+    conn.execute("DELETE FROM report WHERE report_id = %s", (first[0],))   # what retention does
     assert first[0] not in _delivered(conn)

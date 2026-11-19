@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
-from typing import cast
 
 from . import hashchain
 from .config import Config
-from .db import transaction
+from .db import Connection, Row, one, transaction
 from .timeutil import Clock, iso
 
 log = logging.getLogger(__name__)
@@ -22,19 +20,19 @@ log = logging.getLogger(__name__)
 REPORT_VERSION = 1
 
 
-def overlapping_gaps(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
+def overlapping_gaps(conn: Connection, start: str, end: str) -> list[dict]:
     rows = conn.execute(
         'SELECT gap_id, source, start, "end", reason FROM gap '
-        'WHERE start <= ? AND ("end" IS NULL OR "end" >= ?) ORDER BY start', (end, start)).fetchall()
+        'WHERE start <= %s AND ("end" IS NULL OR "end" >= %s) ORDER BY start', (end, start)).fetchall()
     return [dict(r) for r in rows]
 
 
-def build_report(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) -> dict:
+def build_report(conn: Connection, cluster: Row, cfg: Config) -> dict:
     rule = next((r for r in cfg.detection.rules if r.id == cluster["rule_id"]), None)
     events = conn.execute(
         "SELECT e.*, r.text AS raw_text, r.batch_id FROM event e "
         "JOIN cluster_event ce USING (event_id) JOIN raw_line r USING (raw_id) "
-        "WHERE ce.cluster_id = ? ORDER BY e.ts, e.event_id", (cluster["cluster_id"],)).fetchall()
+        "WHERE ce.cluster_id = %s ORDER BY e.ts, e.event_id", (cluster["cluster_id"],)).fetchall()
 
     def distinct(col: str) -> list:
         return sorted({e[col] for e in events if e[col] is not None})
@@ -49,7 +47,7 @@ def build_report(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) ->
               "received_at": cluster["ai_received_at"]}
     else:
         ai = {"status": "unavailable", "label": "AI-generated, advisory only"}
-        skipped = conn.execute("SELECT 1 FROM triage_budget WHERE cluster_id = ? AND outcome = 'skipped'",
+        skipped = conn.execute("SELECT 1 FROM triage_budget WHERE cluster_id = %s AND outcome = 'skipped'",
                                (cluster["cluster_id"],)).fetchone()
         if skipped:
             ai["reason"] = "daily AI limit reached"
@@ -88,7 +86,7 @@ def build_report(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) ->
     }
 
 
-def generate_pending_reports(conn: sqlite3.Connection, cfg: Config, clock: Clock) -> list[int]:
+def generate_pending_reports(conn: Connection, cfg: Config, clock: Clock) -> list[int]:
     """Report every high/critical cluster whose triage finished; close finished medium ones."""
     with transaction(conn) as c:
         c.execute("UPDATE cluster SET state = 'DONE' WHERE severity = 'medium' "
@@ -103,10 +101,10 @@ def generate_pending_reports(conn: sqlite3.Connection, cfg: Config, clock: Clock
         # Report row and state change commit together, so a crash never leaves a
         # REPORTED cluster without a report or a report for a cluster still waiting.
         with transaction(conn) as c:
-            rid = c.execute(
-                "INSERT INTO report (cluster_id, generated_at, body_json) VALUES (?, ?, ?)",
-                (cluster["cluster_id"], iso(clock.now()), json.dumps(body, ensure_ascii=False))).lastrowid
-            c.execute("UPDATE cluster SET state = 'REPORTED' WHERE cluster_id = ?", (cluster["cluster_id"],))
-        created.append(cast(int, rid))  # lastrowid is always set after an INSERT
+            rid = one(c.execute(
+                "INSERT INTO report (cluster_id, generated_at, body_json) VALUES (%s, %s, %s) RETURNING report_id",
+                (cluster["cluster_id"], iso(clock.now()), json.dumps(body, ensure_ascii=False))))[0]
+            c.execute("UPDATE cluster SET state = 'REPORTED' WHERE cluster_id = %s", (cluster["cluster_id"],))
+        created.append(rid)
         log.info("report generated", extra={"cluster_id": cluster["cluster_id"], "report_id": rid})
     return created

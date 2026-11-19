@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
 
@@ -16,7 +15,7 @@ import anthropic
 from pydantic import BaseModel, ValidationError
 
 from .config import SEVERITY_ORDER, Config, TriageConfig
-from .db import transaction
+from .db import Connection, Row, one, transaction
 from .redact import redact_event, sample
 from .timeutil import Clock, iso, parse_iso
 
@@ -120,11 +119,11 @@ def parse_triage_text(text: str) -> TriageResult:
         raise TriageError(f"invalid triage JSON: {exc.errors()[0]['msg']}") from exc
 
 
-def build_payload(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) -> dict:
+def build_payload(conn: Connection, cluster: Row, cfg: Config) -> dict:
     rule = next((r for r in cfg.detection.rules if r.id == cluster["rule_id"]), None)
     rows = conn.execute(
         "SELECT e.* FROM event e JOIN cluster_event ce USING (event_id) "
-        "WHERE ce.cluster_id = ? ORDER BY e.ts, e.event_id", (cluster["cluster_id"],)).fetchall()
+        "WHERE ce.cluster_id = %s ORDER BY e.ts, e.event_id", (cluster["cluster_id"],)).fetchall()
     events = [redact_event(dict(r)) for r in rows]
     return {
         "cluster": {
@@ -139,7 +138,7 @@ def build_payload(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config) -
     }
 
 
-def triage_cluster(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config,
+def triage_cluster(conn: Connection, cluster: Row, cfg: Config,
                    client: LLMClient, clock: Clock) -> str:
     payload = build_payload(conn, cluster, cfg)
     attempts = cfg.triage.retries + 1
@@ -152,20 +151,20 @@ def triage_cluster(conn: sqlite3.Connection, cluster: sqlite3.Row, cfg: Config,
             continue
         with transaction(conn) as c:
             c.execute(
-                "UPDATE cluster SET state = 'TRIAGED', ai_classification = ?, ai_recommended_severity = ?, "
-                "ai_explanation = ?, ai_model = ?, ai_received_at = ? WHERE cluster_id = ?",
+                "UPDATE cluster SET state = 'TRIAGED', ai_classification = %s, ai_recommended_severity = %s, "
+                "ai_explanation = %s, ai_model = %s, ai_received_at = %s WHERE cluster_id = %s",
                 (result.classification[:200], result.recommended_severity, result.explanation[:500],
                  client.model, iso(clock.now()), cluster["cluster_id"]))
         log.info("cluster triaged by %s", client.model, extra={"cluster_id": cluster["cluster_id"]})
         return "TRIAGED"
     with transaction(conn) as c:
-        c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?",
+        c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = %s",
                   (cluster["cluster_id"],))
     log.warning("triage unavailable after %d attempts", attempts, extra={"cluster_id": cluster["cluster_id"]})
     return "TRIAGE_UNAVAILABLE"
 
 
-def run_triage(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMClient | None) -> None:
+def run_triage(conn: Connection, cfg: Config, clock: Clock, client: LLMClient | None) -> None:
     """Freeze settled clusters and triage those at medium severity or higher.
 
     Clusters left in TRIAGE_PENDING by a crash are picked up again here.
@@ -183,22 +182,22 @@ def run_triage(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMC
             if SEVERITY_ORDER[cluster["severity"]] < SEVERITY_ORDER["medium"]:
                 # Low clusters are never sent to the LLM (REQ-04).
                 with transaction(conn) as c:
-                    c.execute("UPDATE cluster SET state = 'DONE' WHERE cluster_id = ? AND state = 'FLAGGED'",
+                    c.execute("UPDATE cluster SET state = 'DONE' WHERE cluster_id = %s AND state = 'FLAGGED'",
                               (cluster["cluster_id"],))
                 continue
             # Leaving FLAGGED freezes the cluster (DD-09). The "AND state" check makes this
             # a no-op if another process already moved it.
             with transaction(conn) as c:
                 frozen = c.execute(
-                    "UPDATE cluster SET state = 'TRIAGE_PENDING' WHERE cluster_id = ? AND state = 'FLAGGED'",
+                    "UPDATE cluster SET state = 'TRIAGE_PENDING' WHERE cluster_id = %s AND state = 'FLAGGED'",
                     (cluster["cluster_id"],)).rowcount
             if not frozen:
                 continue
-            cluster = conn.execute("SELECT * FROM cluster WHERE cluster_id = ?",
-                                   (cluster["cluster_id"],)).fetchone()
+            cluster = one(conn.execute("SELECT * FROM cluster WHERE cluster_id = %s",
+                                       (cluster["cluster_id"],)))
         if not cfg.triage.enabled or client is None:
             with transaction(conn) as c:
-                c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?",
+                c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = %s",
                           (cluster["cluster_id"],))
             continue
         if not _within_daily_budget(conn, cfg, cluster["cluster_id"], now):
@@ -206,7 +205,7 @@ def run_triage(conn: sqlite3.Connection, cfg: Config, clock: Clock, client: LLMC
         triage_cluster(conn, cluster, cfg, client, clock)
 
 
-def _within_daily_budget(conn: sqlite3.Connection, cfg: Config, cluster_id: int, now: datetime) -> bool:
+def _within_daily_budget(conn: Connection, cfg: Config, cluster_id: int, now: datetime) -> bool:
     """Record the cluster against today's LLM budget; False (and TRIAGE_UNAVAILABLE) once it is spent.
 
     A cluster counts once however many retries it needs, and a cluster already
@@ -215,16 +214,17 @@ def _within_daily_budget(conn: sqlite3.Connection, cfg: Config, cluster_id: int,
     day = now.date().isoformat()
     limit = cfg.triage.max_calls_per_day
     with transaction(conn) as c:
-        if c.execute("SELECT 1 FROM triage_budget WHERE cluster_id = ? AND outcome = 'called'",
+        if c.execute("SELECT 1 FROM triage_budget WHERE cluster_id = %s AND outcome = 'called'",
                      (cluster_id,)).fetchone():
             return True
-        used = c.execute("SELECT COUNT(*) FROM triage_budget WHERE day = ? AND outcome = 'called'",
-                         (day,)).fetchone()[0]
+        used = one(c.execute("SELECT COUNT(*) FROM triage_budget WHERE day = %s AND outcome = 'called'",
+                             (day,)))[0]
         allowed = limit is None or used < limit
-        c.execute("INSERT OR REPLACE INTO triage_budget (cluster_id, day, outcome) VALUES (?, ?, ?)",
+        c.execute("INSERT INTO triage_budget (cluster_id, day, outcome) VALUES (%s, %s, %s) "
+                  "ON CONFLICT (cluster_id) DO UPDATE SET day = excluded.day, outcome = excluded.outcome",
                   (cluster_id, day, "called" if allowed else "skipped"))
         if not allowed:
-            c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = ?", (cluster_id,))
+            c.execute("UPDATE cluster SET state = 'TRIAGE_UNAVAILABLE' WHERE cluster_id = %s", (cluster_id,))
     if not allowed:
         log.info("daily AI limit of %d reached; cluster not sent to the LLM", limit,
                  extra={"cluster_id": cluster_id})

@@ -14,8 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY sec450 ./sec450
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Run as an unprivileged user. /data (database) and /certs are created here and
-# owned by that user, so the named volumes mounted on them inherit the ownership.
+# Run as an unprivileged user. /data (where sec450.migrate_sqlite mounts the old SQLite
+# volume) and /certs are created here and owned by that user, so the named volumes
+# mounted on them inherit the ownership.
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin sec450 \
     && mkdir -p /data /certs \
     && chown sec450:sec450 /data /certs \

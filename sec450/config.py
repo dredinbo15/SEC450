@@ -178,8 +178,19 @@ class IncidentsConfig(BaseModel):
     backfill: bool = False                       # False: reports that exist when this is first enabled are not sent
 
 
+class DatabaseConfig(BaseModel):
+    """PostgreSQL connection (DD-06). The password is a secret: it is read from the
+    environment variable named here (set in .env), never from this file."""
+    host: str = "postgres"
+    port: int = Field(5432, ge=1, le=65535)
+    name: str = "sec450"
+    user: str = "sec450"
+    password_env: str = "POSTGRES_PASSWORD"   # the variable's name, not a password  # noqa: S105  # nosec B105
+    connect_timeout_seconds: int = Field(10, ge=1)
+
+
 class Config(BaseModel):
-    database_path: Path = Path("data/sec450.db")
+    database: DatabaseConfig = DatabaseConfig()
     sources: list[SourceConfig]
     collector: CollectorConfig = CollectorConfig()
     detection: DetectionConfig
