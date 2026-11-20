@@ -40,6 +40,10 @@ from ..keys import create_key, revoke_key
 
 log = logging.getLogger(__name__)
 
+# The list endpoint the auth and query checks call: ours, or the incident list for targets
+# whose OpenAPI document publishes the pod's incident API instead (see detect_events_path).
+EVENTS_PATH = "/v1/events"
+INCIDENTS_PATH = "/api/v1/incidents"
 # The operations of our interface (README REQ-05, REQ-09 and this module) the suite can exercise.
 OPERATIONS = ("GET /health", "GET /v1/events", "GET /v1/clusters", "GET /v1/reports",
               "GET /v1/reports/{id}", "GET /v1/integrity", "POST /test/setup", "GET /test/report")
@@ -155,8 +159,11 @@ class Suite:
     """One run of the checks against a target system base URL."""
 
     def __init__(self, http: httpx.Client, session_id: str, key: str | None,
-                 tls_probe: TlsProbe | None, now: datetime) -> None:
+                 tls_probe: TlsProbe | None, now: datetime, events_path: str = EVENTS_PATH) -> None:
         self.http, self.session_id, self.key, self.tls_probe, self.now = http, session_id, key, tls_probe, now
+        self.events_path = events_path
+        self.events_op = f"GET {events_path}"
+        self.operations = tuple(self.events_op if op == "GET /v1/events" else op for op in OPERATIONS)
         self.results: list[dict[str, Any]] = []
         self.ops: set[str] = {"POST /test/setup"}   # the target's setup confirmed this session
         self.acs: set[str] = set()
@@ -212,7 +219,7 @@ class Suite:
         return "fail", f"{what}: expected HTTP {status}, got {r.status_code}: {r.text[:200]}"
 
     def expect_400(self, what: str, params: dict[str, str]) -> tuple[str, str]:
-        r = self.get("/v1/events", params)
+        r = self.get(self.events_path, params)
         if r.status_code != 400:
             return "fail", f"{what}: expected HTTP 400, got {r.status_code}"
         body = r.json()
@@ -225,10 +232,10 @@ class Suite:
         now = self.now
         self.check("health", ("GET /health",), (), self._health)
         self.check("system-test-report", ("GET /test/report",), (), self._system_report)
-        self.check("auth-missing-key", ("GET /v1/events",), ("AC-24",), lambda: self._auth(None))
-        self.check("auth-wrong-key", ("GET /v1/events",), ("AC-24",),
+        self.check("auth-missing-key", (self.events_op,), ("AC-24",), lambda: self._auth(None))
+        self.check("auth-wrong-key", (self.events_op,), ("AC-24",),
                    lambda: self._auth("Bearer sec450_not_a_real_key"))
-        self.check("auth-valid-key", ("GET /v1/events",), ("AC-24",), self._valid_key, needs_key=True)
+        self.check("auth-valid-key", (self.events_op,), ("AC-24",), self._valid_key, needs_key=True)
 
         invalid = [
             ("param-start-after-end", {"start": self.ts(now), "end": self.ts(now - timedelta(hours=1))}),
@@ -242,7 +249,7 @@ class Suite:
             ("param-unknown", {"foo": "bar"}),
         ]
         for test_id, params in invalid:
-            self.check(test_id, ("GET /v1/events",), ("AC-14",),
+            self.check(test_id, (self.events_op,), ("AC-14",),
                        partial(self.expect_400, test_id, params), needs_key=True)
         valid = [
             ("param-span-31-days", {"start": self.ts(now - timedelta(days=31)), "end": self.ts(now)}),
@@ -251,11 +258,11 @@ class Suite:
             ("param-limit-1000", {"limit": "1000"}),
         ]
         for test_id, params in valid:
-            self.check(test_id, ("GET /v1/events",), ("AC-14",),
+            self.check(test_id, (self.events_op,), ("AC-14",),
                        partial(self._expect_events_200, test_id, params), needs_key=True)
 
-        self.check("events-collected", ("GET /v1/events",), (), self._events_collected, needs_key=True)
-        self.check("filter-source-ip", ("GET /v1/events",), ("AC-13",), self._filter_source_ip, needs_key=True)
+        self.check("events-collected", (self.events_op,), (), self._events_collected, needs_key=True)
+        self.check("filter-source-ip", (self.events_op,), ("AC-13",), self._filter_source_ip, needs_key=True)
         self.check("clusters-list", ("GET /v1/clusters",), ("AC-13",), self._clusters, needs_key=True)
         self.check("filter-severity", ("GET /v1/clusters",), ("AC-13",), self._filter_severity, needs_key=True)
         self.check("reports-list", ("GET /v1/reports",), ("AC-13",), self._reports, needs_key=True)
@@ -271,7 +278,7 @@ class Suite:
         self.check("integrity-chains", ("GET /v1/integrity",), ("AC-21", "AC-26"), self._integrity, needs_key=True)
 
     def _expect_events_200(self, what: str, params: dict[str, str]) -> tuple[str, str]:
-        return self.expect(self.get("/v1/events", params), 200, what)
+        return self.expect(self.get(self.events_path, params), 200, what)
 
     def _tls(self) -> list[tuple[str, str, str]]:
         try:
@@ -297,9 +304,9 @@ class Suite:
         return "pass", "system report returned coverage.code"
 
     def _auth(self, header: str | None) -> tuple[str, str]:
-        r = self.get("/v1/events", auth=header or None)
+        r = self.get(self.events_path, auth=header or None)
         if r.status_code != 401:
-            return "fail", f"expected HTTP 401, got {r.status_code}"
+            return "fail", f"{self.events_op}: expected HTTP 401, got {r.status_code}"
         if "bearer" not in r.headers.get("www-authenticate", "").lower():
             return "fail", "401 without a WWW-Authenticate: Bearer header"
         if "events" in r.json():
@@ -307,7 +314,7 @@ class Suite:
         return "pass", "HTTP 401 with WWW-Authenticate: Bearer and no data"
 
     def _valid_key(self) -> tuple[str, str]:
-        r = self.get("/v1/events")
+        r = self.get(self.events_path)
         if r.status_code != 200:
             return "fail", f"valid key: expected 200, got {r.status_code}"
         body = r.json()
@@ -316,7 +323,7 @@ class Suite:
         return "pass", f"valid key: HTTP 200 with {body['count']} events"
 
     def _events_collected(self) -> tuple[str, str]:
-        r = self.get("/v1/events", {"limit": "1"})
+        r = self.get(self.events_path, {"limit": "1"})
         if r.status_code != 200:
             return "fail", f"expected 200, got {r.status_code}"
         if r.json()["count"] < 1:
@@ -327,11 +334,11 @@ class Suite:
         # The newest events are often lines without a requester: sshd healthcheck disconnects
         # arrive every 10 s, so between traffic bursts they fill the latest hundred or more.
         # Filter on the newest event among the latest 1000 (the maximum limit) that has one.
-        latest = self.get("/v1/events", {"limit": "1000"}).json().get("events") or []
+        latest = self.get(self.events_path, {"limit": "1000"}).json().get("events") or []
         ip = next((e["client_ip"] for e in latest if e.get("client_ip")), None)
         if not ip:
             return "skip", "none of the latest 1000 events has a client IP to filter on"
-        r = self.get("/v1/events", {"source_ip": ip, "limit": "1000"})
+        r = self.get(self.events_path, {"source_ip": ip, "limit": "1000"})
         events = r.json().get("events", []) if r.status_code == 200 else []
         if r.status_code != 200 or not events:
             return "fail", f"source_ip={ip}: expected 200 with that event, got {r.status_code}, {len(events)} events"
@@ -406,8 +413,8 @@ class Suite:
             "results": self.results,
             "coverage": {
                 "code": self.code_coverage,
-                "component": {"covered": len(self.ops), "total": len(OPERATIONS),
-                              "basis": "operations of the SEC450 interface (" + ", ".join(OPERATIONS)
+                "component": {"covered": len(self.ops), "total": len(self.operations),
+                              "basis": "operations of the SEC450 interface (" + ", ".join(self.operations)
                                        + ") exercised by an executed test"},
                 "system": {"covered": len(self.acs), "total": ACCEPTANCE_CRITERIA,
                            "basis": "acceptance criteria AC-01 to AC-30 (README.md) exercised by an executed test: "
@@ -544,6 +551,17 @@ def install(app: FastAPI, cfg: Config) -> None:
         return JSONResponse(session.report)
 
 
+def detect_events_path(http: httpx.Client) -> str:
+    """The pod's incident API publishes /api/v1/incidents and no /v1/events in its OpenAPI
+    document; point the list checks there. Anything else keeps our /v1/events."""
+    try:
+        r = http.get("/openapi.json")
+        paths = r.json().get("paths", {}) if r.status_code == 200 else {}
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return EVENTS_PATH
+    return INCIDENTS_PATH if INCIDENTS_PATH in paths and EVENTS_PATH not in paths else EVENTS_PATH
+
+
 def _run_suite(app: FastAPI, cfg: Config, sid: str, session: TesterSession) -> dict[str, Any]:
     key_id = key = None
     if session.is_self:
@@ -556,8 +574,9 @@ def _run_suite(app: FastAPI, cfg: Config, sid: str, session: TesterSession) -> d
             conn.close()
     try:
         with app.state.tester_client_factory(session.target_url, session.is_self) as http:
+            events_path = EVENTS_PATH if session.is_self else detect_events_path(http)
             suite = Suite(http, sid, key, app.state.tester_tls_probe if session.is_self else None,
-                          app.state.tester_now())
+                          app.state.tester_now(), events_path)
             suite.run()
             return suite.report(session.target_url)
     finally:

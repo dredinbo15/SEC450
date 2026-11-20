@@ -6,6 +6,7 @@ target, run, stored report, system report) and applies the same format rules as 
 from datetime import timedelta
 
 import pytest
+from fastapi import Body, FastAPI
 from fastapi.testclient import TestClient
 
 from sec450.api.app import create_app
@@ -180,6 +181,51 @@ def test_external_target_without_key_skips_key_checks(app, client):
     assert outcomes["auth-missing-key"] == "pass"
     assert outcomes["auth-valid-key"] == "skip"
     assert outcomes["tls-versions"] == "skip"
+
+
+def fake_incident_api() -> FastAPI:
+    """The pod's incident API, as far as the suite sees it: the course interface under /system,
+    no authentication, and an OpenAPI document listing /api/v1/incidents."""
+    pod = FastAPI()
+
+    @pod.get("/health")
+    def health() -> dict:
+        return {"status": "ok"}
+
+    @pod.post("/test/setup", status_code=201)
+    def setup(body: dict = Body()) -> dict:
+        return {"session_id": body["session_id"]}
+
+    @pod.get("/test/report")
+    def report(session_id: str) -> dict:
+        return {"session_id": session_id, "coverage": {"code": {"covered": None, "total": None,
+                                                                "basis": "not instrumented"}}}
+
+    @pod.get("/api/v1/incidents")
+    def incidents() -> list:
+        return []
+
+    host = FastAPI()
+    host.mount("/system", pod)
+    return host
+
+
+def test_incident_api_target_checks_the_incident_list(app, client):
+    """A target whose OpenAPI document has /api/v1/incidents and no /v1/events gets the list
+    checks on /api/v1/incidents; its open endpoint fails the 401 checks."""
+    app.state.tester_target_guard = lambda target: None
+    target = "https://pod-incidents.example/system"
+    pod = fake_incident_api()
+    app.state.tester_client_factory = lambda t, is_self: TestClient(pod, base_url=t)
+    sid = client.post("/tester/test/setup", json={"target_url": target}).json()["session_id"]
+    report = client.post("/tester/test/run", json={"session_id": sid}).json()
+    assert report_problems(report, sid, target) == []
+    results = {r["test_id"]: r for r in report["results"]}
+    assert results["health"]["outcome"] == "pass"
+    for test_id in ("auth-missing-key", "auth-wrong-key"):
+        assert results[test_id]["outcome"] == "fail"
+        assert results[test_id]["message"] == "GET /api/v1/incidents: expected HTTP 401, got 200"
+    assert "GET /api/v1/incidents" in report["coverage"]["component"]["basis"]
 
 
 def test_target_setup_failure_is_forwarded(app, client):
