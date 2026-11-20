@@ -6,7 +6,7 @@
 
 **Status:** all four lab sources run: an SSH server (ssh01), nginx (web01) and a small JSON API app (app01) behind nginx, which is the trusted proxy at 172.20.0.10. `traffic-gen` rotates through one attack per rule (SSH brute force, 404 scan, injection probes, a 12 MB download, app login brute force), one every ~22 minutes, with normal browsing in between. Triage uses the mock LLM by default.
 
-**Acceptance criteria:** every automated check passes in CI: the 21 fully automated criteria, plus the automated part of AC-20, AC-24, AC-27 and AC-28. The manual steps (AC-08, AC-12, AC-16, AC-29, AC-30 and the review parts of those four) need team members. [docs/acceptance.md](docs/acceptance.md) has the per-criterion status, the procedures and the inspection notes.
+**Acceptance criteria:** every automated check passes in CI: the 21 fully automated criteria, plus the automated part of AC-20, AC-24, AC-27 and AC-28. The manual steps (AC-08, AC-12, AC-16, AC-29, AC-30 and the review parts of those four) need team members. [docs/acceptance.md](docs/acceptance.md) has the per-criterion status, the procedures and the inspection notes. [docs/limitations.md](docs/limitations.md) lists the known limitations.
 
 You need Docker Desktop (or Docker Engine with Compose v2.24+). From the repo root:
 
