@@ -8,6 +8,7 @@ data/
 certs/
 geoip/*.mmdb
 tests/
+sec450/pod_tests/
 docs/
 **/__pycache__
 .pytest_cache

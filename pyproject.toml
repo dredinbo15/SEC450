@@ -14,6 +14,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S311"]   # asserts, fake secrets and non-crypto random are fine in tests
+"sec450/pod_tests/**" = ["S101"]                  # the Team 105 suite asserts too (README there)
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -25,5 +26,5 @@ check_untyped_defs = true
 plugins = ["pydantic.mypy"]   # understands pydantic field defaults
 
 [tool.bandit]
-exclude_dirs = ["tests", ".venv"]
+exclude_dirs = ["tests", ".venv", "sec450/pod_tests"]   # pod_tests: test code for the other pod's API
 skips = ["B608"]   # same reason as ruff S608 above

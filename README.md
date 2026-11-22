@@ -113,6 +113,8 @@ mypy sec450
 bandit -c pyproject.toml -r sec450 docker
 ```
 
+The other pod's incident API has its own suite in [sec450/pod_tests/](sec450/pod_tests/README.md). It runs against their live host in isolated course sessions with `pytest sec450/pod_tests`, and neither plain `pytest` nor CI runs it.
+
 Test hooks: `sec450/mock_llm.py` (mock LLM: ok, timeout, http_error, bad_json, missing_field), `FixedClock` in `sec450/timeutil.py` (injectable clock), and `tests/fixtures/logs/` (fixture log files). `tests/scenarios.py` generates seeded attack and baseline traffic for AC-07 and AC-28. Add `-s` to print the latency, performance and accuracy numbers.
 
 ## Requirements
